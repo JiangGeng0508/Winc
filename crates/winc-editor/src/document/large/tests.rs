@@ -323,6 +323,105 @@ fn invalid_utf8_and_truncation_do_not_panic() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// 顺序遍历覆盖 UTF-8 跨读取块、跨原文与新增片段的边界，以及内容中的 BOM 和 NUL。
+#[test]
+fn utf8_streaming_matches_rope_across_blocks_and_edits() {
+    let content = format!(
+        "{}é中🦀\r\n{}\n{}\u{feff}\0\n",
+        "x".repeat(FIRST_READ - 1),
+        "aé中🦀".repeat(CHUNK / 8),
+        "中".repeat(CHUNK),
+    );
+    let (mut large, path) = open("utf8-stream", content.as_bytes());
+    let mut rope = Rope::from_str(&content);
+
+    for edited in [false, true] {
+        if edited {
+            large.replace(FIRST_READ, 1, "\u{feff}新\n🦀");
+            rope.replace(FIRST_READ, 1, "\u{feff}新\n🦀");
+        }
+        assert!(large.is_utf8());
+        assert_eq!(large.end_pos(), rope.end_pos());
+        assert_eq!(large.line_count(), rope.line_count());
+        for from in [0, 1] {
+            let mut next = from;
+            let stopped = large.visit_lines(from, usize::MAX, |line, start, text| {
+                assert_eq!(line, next);
+                assert_eq!(start, rope.line_start(line));
+                assert_eq!(text, rope.line_content(line).slice());
+                next += 1;
+                ControlFlow::Continue(())
+            });
+            assert_eq!(stopped, None);
+            assert_eq!(next, rope.line_count());
+        }
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+/// SIMD 路径与有损解码一致：拒绝过长编码、代理项、越界码点和未完成的多字节序列。
+#[test]
+fn invalid_utf8_streaming_matches_lossy_decoding() {
+    let invalid: &[&[u8]] = &[
+        b"\x80",
+        b"\xc0\xaf",
+        b"\xe0\x80\xaf",
+        b"\xed\xa0\x80",
+        b"\xf0\x80\x80\xaf",
+        b"\xf4\x90\x80\x80",
+        b"\xf5\x80\x80\x80",
+        b"\xc2",
+        b"\xe2\x82",
+        b"\xf0\x9f\x92",
+    ];
+    let mut content = Vec::new();
+    for prefix in [63, 64, 65, FIRST_READ - 1] {
+        for bytes in invalid {
+            content.extend(std::iter::repeat_n(b'x', prefix));
+            content.extend_from_slice(bytes);
+            content.extend_from_slice("中\n".as_bytes());
+        }
+    }
+    // 文件末尾保留一个未完成的四字节字符。
+    content.extend_from_slice(b"\xf0\x9f\x92");
+    let expected = String::from_utf8_lossy(&content);
+    let rope = Rope::from_str(&expected);
+    let (large, path) = open("utf8-invalid-stream", &content);
+    assert!(!large.is_utf8());
+    assert_eq!(large.end_pos(), rope.end_pos());
+    let mut visited = 0;
+    large.visit_lines(0, usize::MAX, |line, start, text| {
+        assert_eq!(line, visited);
+        assert_eq!(start, rope.line_start(line));
+        assert_eq!(text, rope.line_content(line).slice());
+        visited += 1;
+        ControlFlow::Continue(())
+    });
+    assert_eq!(visited, rope.line_count());
+    std::fs::remove_file(path).unwrap();
+}
+
+/// 文件可能在建索引后被原地重写；遍历必须校验新读到的内容。
+#[test]
+fn streaming_revalidates_externally_changed_bytes() {
+    let mut content = vec![b'x'; FIRST_READ + 64];
+    content.push(b'\n');
+    let (large, path) = open("utf8-external-change", &content);
+    assert!(large.is_utf8());
+    content[63] = 0xff;
+    content[FIRST_READ - 1] = 0xfe;
+    std::fs::write(&path, &content).unwrap();
+    let expected = String::from_utf8_lossy(&content);
+    let mut visited = 0;
+    large.visit_lines(0, usize::MAX, |line, _, text| {
+        assert_eq!(text, expected.split('\n').nth(line).unwrap());
+        visited += 1;
+        ControlFlow::Continue(())
+    });
+    assert_eq!(visited, 2);
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn byte_helpers() {
     assert_eq!(complete_prefix("aé".as_bytes()), 3);

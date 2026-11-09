@@ -2,6 +2,8 @@
 
 use super::*;
 
+use encoding_rs::Encoding;
+
 /// 把 `bytes` 追加到 `line`，使 `line` 的长度不超过 `cap` 字节；超出上限的字节丢弃。
 pub(super) fn push_capped(line: &mut Vec<u8>, bytes: &[u8], cap: usize) {
     let room = cap.saturating_sub(line.len());
@@ -65,7 +67,7 @@ pub(super) fn count_valid(bytes: &[u8]) -> u64 {
 
 /// 返回按有损解码计算的字符数，每段连续的非法字节算一个字符。
 pub(crate) fn char_count(bytes: &[u8]) -> u64 {
-    if std::str::from_utf8(bytes).is_ok() {
+    if Encoding::utf8_valid_up_to(bytes) == bytes.len() {
         return count_valid(bytes);
     }
 
