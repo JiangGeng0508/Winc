@@ -24,7 +24,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 mod bench;
-#[cfg(unix)]
 mod dev;
 mod dmg;
 mod feed;
@@ -33,10 +32,15 @@ mod file_types;
 mod icons;
 mod samples;
 mod sparkle;
+#[cfg(test)]
+mod tests;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    dispatch(&args)
+}
 
+fn dispatch(args: &[String]) -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("samples") => samples::samples().map(|_| true).map_err(|e| e.to_string()),
         Some("app") => app_options(&args[1..])
@@ -49,15 +53,13 @@ fn main() -> ExitCode {
             println!("{}", dir.join("bin").display());
             true
         }),
-        Some("linux-appcast") => appcast(feed::Platform::Linux, &args, "AppImage"),
-        Some("windows-appcast") => appcast(feed::Platform::Windows, &args, "安装包"),
+        Some("linux-appcast") => appcast(feed::Platform::Linux, args, "AppImage"),
+        Some("windows-appcast") => appcast(feed::Platform::Windows, args, "安装包"),
         Some("dmg") => dmg_options(&args[1..])
             .and_then(|(app, output)| dmg::dmg(app, output))
             .map(|_| true),
         Some("icons") if args.len() == 2 => icons::write(Path::new(&args[1])).map(|_| true),
-        #[cfg(unix)]
         Some("test") => dev::test(&args[1..]),
-        #[cfg(unix)]
         Some("tidy") => dev::tidy().map(|()| true),
         Some("bench") => {
             // 至少测一次，否则没有样本可排序、无法取出中位数。

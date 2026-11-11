@@ -31,19 +31,16 @@ mod native_tests;
 /// 顶栏中的控件按客户区处理；顶栏其余部分和窗口边框交给系统处理。
 #[derive(Default)]
 pub struct WindowHitTest {
-    /// 顶栏高度（逻辑像素），从客户区顶边量起。
+    /// 可拖动顶栏的高度；为零时不提供额外的标题栏命中区域。
     pub caption_height: f32,
-    /// 可拖动调整尺寸的边框宽度（逻辑像素）；为 0 或窗口最大化时不检测边框。
+    /// 自绘边框的可缩放宽度；原生边框使用零，最大化时也不参与命中。
     pub resize_border: f32,
-    /// 顶栏中按客户区接收输入的控件矩形（逻辑像素）。
+    /// 顶栏中接收客户区输入的控件矩形，例如标签和窗口按钮。
     pub client: Vec<Rect>,
 }
 
 impl WindowHitTest {
-    /// 返回点 (`x`, `y`) 的命中测试结果（`HT*` 常量）。
-    ///
-    /// 坐标与窗口尺寸 `width`、`height` 均为逻辑像素；点位于窗口外时返回 `HTCLIENT`，
-    /// 即保留系统的默认结果。
+    /// 按客户区坐标、当前尺寸和最大化状态返回 Windows 的 `HT*` 命中代码。
     pub fn hit(&self, x: f32, y: f32, width: f32, height: f32, maximized: bool) -> u32 {
         if !Rect::new(0.0, 0.0, width, height).contains(x, y) {
             return HTCLIENT;
@@ -82,9 +79,9 @@ impl WindowHitTest {
 pub struct WindowInput(Arc<Mutex<WindowHitTest>>);
 
 impl WindowInput {
-    /// 为 `window` 安装命中测试回调；无法取得 Win32 句柄或安装失败时返回 `None`。
+    /// 在创建窗口的事件循环线程上安装；在窗口首次显示前调用。
     ///
-    /// 必须在创建该窗口的事件循环线程上、窗口首次显示前调用。
+    /// 每个窗口只安装一次；无法取得 Win32 句柄或安装子类回调时返回 `None`。
     pub fn new(window: &Window) -> Option<Self> {
         let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
             return None;
@@ -114,7 +111,7 @@ impl WindowInput {
         Some(Self(state))
     }
 
-    /// 替换命中区域；锁已中毒时忽略本次更新。
+    /// 替换本窗口的命中区域；系统回调只读取这一份独立的布局数据。
     pub fn update(&self, hit: WindowHitTest) {
         if let Ok(mut state) = self.0.lock() {
             *state = hit;

@@ -278,10 +278,8 @@ pub fn test(args: &[String]) -> Result<bool, String> {
 /// # Errors
 ///
 /// 读不了目录、`nm` 无法运行时返回原因。
+#[cfg(target_os = "macos")]
 pub fn tidy() -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Ok(());
-    }
     let debug = root().join("target").join("debug");
     let deps = debug.join("deps");
     let Ok(entries) = std::fs::read_dir(&deps) else {
@@ -340,9 +338,20 @@ pub fn tidy() -> Result<(), String> {
     Ok(())
 }
 
+/// 非 macOS 平台没有需要清理的独立调试目标文件。
+///
+/// # Errors
+///
+/// 总是成功，不执行文件操作。
+#[cfg(not(target_os = "macos"))]
+pub fn tidy() -> Result<(), String> {
+    Ok(())
+}
+
 /// 是否是可执行的普通文件（测试程序、`winc`）。
 ///
 /// 目录、`.d` 依赖文件、库不算。
+#[cfg(target_os = "macos")]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.extension().is_none()

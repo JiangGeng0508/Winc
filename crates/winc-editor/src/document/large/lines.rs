@@ -2,6 +2,8 @@
 
 use super::*;
 
+use encoding_rs::UTF_8;
+
 impl Lines for LargeText {
     fn line_count(&self) -> usize {
         self.total_newlines() as usize + 1
@@ -170,8 +172,9 @@ impl LargeText {
 
         self.stream(loc, |chunk| {
             // 每块都在完整字符处结束。整块是合法 UTF-8 时，按换行切出的每一段也合法，只需校验一次。
-            // 块内没有换行时整块属于同一个超长行，交出的内容另行校验，不必校验整块。
-            let valid = memchr::memchr(b'\n', chunk).and_then(|_| std::str::from_utf8(chunk).ok());
+            // UTF-8 解码借用通过 SIMD 校验的原始字节，不分配、不去掉内容中的 BOM。
+            let decoded = UTF_8.decode_without_bom_handling_and_without_replacement(chunk);
+            let valid = decoded.as_deref();
             let count = |bytes: &[u8]| {
                 if valid.is_some() {
                     count_valid(bytes)

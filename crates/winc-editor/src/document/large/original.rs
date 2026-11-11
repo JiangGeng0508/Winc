@@ -2,6 +2,8 @@
 
 use super::*;
 
+use encoding_rs::Encoding;
+
 /// 原文件中某一行行首的位置记录。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Checkpoint {
@@ -350,7 +352,8 @@ pub(super) fn scan_segment(file: &File, base: u64, from: u64, to: u64) -> io::Re
             complete_prefix(&buf[..n]).max(1)
         };
         let chunk = &buf[..take];
-        let valid = std::str::from_utf8(chunk).is_ok();
+        // 分块校验复用编码库的 SIMD 路径；字符计数和非法字节处理共用本次校验结果。
+        let valid = Encoding::utf8_valid_up_to(chunk) == chunk.len();
         let count = |bytes: &[u8]| {
             if valid {
                 count_valid(bytes)
