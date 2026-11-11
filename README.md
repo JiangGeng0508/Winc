@@ -69,6 +69,10 @@ repeated taps. Tapping an input area after closing the keyboard requests it agai
 Text roles remain registered while Winc is inactive; returning from another app updates focus
 immediately, keeping an already visible keyboard open.
 
+Image and SVG previews zoom like the PDF preview: hold Ctrl (⌘ on macOS) and scroll, pinch, or
+press Ctrl/⌘ with `+`, `-` or `0`; the point under the pointer stays in place. Scroll or drag a
+zoomed image to pan, and double-click to fit it again. This also works in the SVG split preview.
+
 ## Platforms
 
 | Platform | Requirements | Package |

@@ -936,11 +936,18 @@ impl App {
     /// 编辑区或输入框。
     pub(in crate::app) fn on_ime(&mut self, ime: Ime) {
         match ime {
+            // 组字文字只属于焦点所在的一处，另一处的清空。
             Ime::Preedit(text, _) => {
                 if self.focus.is_field() {
                     self.field_preedit = text;
+                    self.preedit.clear();
                 } else {
+                    // 尚未在预览上点击就开始组字时，预览同样显示光标和组字文字。
+                    if !text.is_empty() && self.focus == Focus::Editor && self.markdown_live() {
+                        self.start_live_editing();
+                    }
                     self.preedit = text;
+                    self.field_preedit.clear();
                 }
             }
             Ime::Commit(text) => {
@@ -966,26 +973,41 @@ impl App {
         self.request_redraw();
     }
 
+    /// 输入法正在组字的文字，只在焦点位于 `focus` 时返回。
+    ///
+    /// 组字文字显示在焦点所在的一处：编辑区、可编辑的预览和终端都读取同一份文字，各自只在
+    /// 持有焦点时显示。
+    pub(crate) fn preedit_at(&self, focus: Focus) -> &str {
+        if self.focus == focus {
+            &self.preedit
+        } else {
+            ""
+        }
+    }
+
     /// 当前焦点是否接收文本输入；浮层遮挡时不暴露下方的可编辑区域。
+    ///
+    /// 输入框、未结束的终端、可编辑的文档和差异新侧接收文字；只读区域不启用输入法和触摸键盘。
     pub(in crate::app) fn takes_text(&self) -> bool {
         if self.alert.is_some() || self.popup().is_some() {
             return false;
         }
-        self.focus.is_field()
-            || (self.focus == Focus::Terminal
-                && self.terminal.tab().is_some_and(|t| t.ended.is_none()))
-            || (self.focus == Focus::Editor
-                && self.editor.active().is_some_and(|d| {
-                    (d.edits_text() && d.text_editable())
-                        || d.diff
-                            .as_ref()
-                            .is_some_and(|v| v.editing && v.new.path.is_some())
-                }))
+        match self.focus {
+            Focus::Terminal => self.terminal.tab().is_some_and(|t| t.ended.is_none()),
+            Focus::Editor => self.editor.active().is_some_and(|doc| {
+                let diff = doc.diff.as_deref();
+                (doc.edits_text() && doc.text_editable())
+                    || diff.is_some_and(|v| v.editing && v.new.path.is_some())
+            }),
+            focus => focus.is_field(),
+        }
     }
 
-    /// 同步文本输入是否启用及候选窗的位置；状态和位置未变化时不重复设置。
+    /// 让输入法的状态与焦点一致，并把候选窗的位置（`ImeState::cursor`，逻辑像素）同步给窗口。
     ///
-    /// 窗口按系统的逻辑坐标接收位置，界面的逻辑像素乘以界面缩放倍数后传入。
+    /// 焦点不在可以输入文字的位置时停用输入法：按键按原样送达，不进入组字，候选窗也不会出现在
+    /// 上一次输入的位置。位置没有变化时不重复设置；窗口按系统的逻辑坐标接收位置，界面的逻辑
+    /// 像素乘以界面缩放倍数后传入。
     pub(in crate::app) fn update_ime_area(&mut self) {
         let allowed = self.takes_text();
         if self.ime.allowed != Some(allowed)
