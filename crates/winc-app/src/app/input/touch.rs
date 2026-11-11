@@ -75,6 +75,9 @@ pub(in crate::app) struct TouchState {
     pub(in crate::app) last_event: Option<Instant>,
     /// 是否正在把一次点按作为鼠标点击发出；为真时连击判定按 [`TAP_SLOP`] 放宽位置偏差。
     pub(in crate::app) tapping: bool,
+    /// 测试中记录已确认的输入区点按，离屏测试不实际打开系统键盘。
+    #[cfg(test)]
+    pub(in crate::app) keyboard_requests: usize,
     /// 向系统命中测试提供可交互区域的句柄；窗口创建前或安装失败时为 `None`。
     #[cfg(windows)]
     pub(in crate::app) window_input: Option<crate::windows::WindowInput>,
@@ -301,11 +304,25 @@ impl App {
     fn apply_touch(&mut self, action: Action) {
         match action {
             Action::Tap((x, y)) => {
+                #[cfg(any(windows, test))]
+                let keyboard = self.touch_keyboard_at(x, y);
                 self.on_mouse_move(x, y);
                 self.touch.tapping = true;
                 self.on_mouse_down(MouseButton::Left);
                 self.on_mouse_up(MouseButton::Left);
                 self.touch.tapping = false;
+                // 焦点与点击处理完毕后，通知系统当前文本焦点；已显示时不再请求唤起。
+                #[cfg(any(windows, test))]
+                if keyboard == Some(self.focus) && self.touch_keyboard_at(x, y) == keyboard {
+                    #[cfg(test)]
+                    {
+                        self.touch.keyboard_requests += 1;
+                    }
+                    #[cfg(windows)]
+                    if let Some(window) = &self.window.handle {
+                        let _ = self.ime.touch_keyboard.show(window);
+                    }
+                }
             }
             Action::Context((x, y)) => {
                 self.last_click = None;

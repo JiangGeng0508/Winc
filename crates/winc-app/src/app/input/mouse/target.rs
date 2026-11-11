@@ -3,6 +3,85 @@
 use super::*;
 
 impl App {
+    /// 点按位置对应的可输入焦点；沿用点击命中与字段布局，不把可选中的只读文字当作输入框。
+    ///
+    /// 点按前后各检查一次：关闭浮层的点击不能穿透到下方的输入区。
+    #[cfg(any(windows, test))]
+    pub(in crate::app) fn touch_keyboard_at(&self, x: f32, y: f32) -> Option<Focus> {
+        if self.alert.is_some() || self.popup().is_some() {
+            return None;
+        }
+        if self.settings.open {
+            return match self.settings_part_at(x, y) {
+                Some(SettingsPart::Field(s))
+                    if s.control() != SettingControl::Command
+                        || self
+                            .settings
+                            .editing
+                            .as_ref()
+                            .is_some_and(|(editing, _)| *editing == s) =>
+                {
+                    Some(Focus::Setting)
+                }
+                Some(SettingsPart::KeySearch) => Some(Focus::KeySearch),
+                Some(SettingsPart::SearchField) => Some(Focus::SettingsSearch),
+                _ => None,
+            };
+        }
+        if self.form_dialog.is_some() {
+            return matches!(
+                self.dialog_part_at(x, y),
+                Some(crate::layout::DialogPart::Branch | crate::layout::DialogPart::Second)
+            )
+            .then_some(Focus::Dialog);
+        }
+        if self
+            .markdown
+            .diagram
+            .as_ref()
+            .is_some_and(|v| v.area.contains(x, y))
+        {
+            return None;
+        }
+        if self.picker.open {
+            return (self.picker.places.is_none()
+                && self.picker.input.view.area.contains(x, y)
+                && !self.hits.picker_parts.iter().any(|(r, _)| r.contains(x, y)))
+            .then_some(Focus::Picker);
+        }
+        if let Some(input) = &self.name_input {
+            return input
+                .field
+                .view
+                .area
+                .contains(x, y)
+                .then_some(Focus::Prompt);
+        }
+        match self.target_at(x, y) {
+            Target::Search | Target::Prompt | Target::Panel(_) | Target::TerminalHeader(_) => {
+                self.field_at(x, y)
+            }
+            Target::Log(crate::app::git::log::LogTarget::Search) => Some(Focus::LogFilter),
+            Target::Editor
+                if self.over_diff_editable(x, y)
+                    || (self.active_shows_text()
+                        && self.layout.text.contains(x, y)
+                        && self.editor.active().is_some_and(|d| d.text_editable())) =>
+            {
+                Some(Focus::Editor)
+            }
+            Target::MarkdownText if self.markdown_live() => Some(Focus::Editor),
+            // 终端是一个完整的输入面，命令解析与 PowerShell 等 shell 无关；已退出的标签不弹键盘。
+            Target::Terminal
+                if self.terminal_view().contains(x, y)
+                    && self.terminal.tab().is_some_and(|t| t.ended.is_none()) =>
+            {
+                Some(Focus::Terminal)
+            }
+            _ => None,
+        }
+    }
+
     /// 把顶栏当前的命中测试区域同步给窗口过程。
     ///
     /// 窗口过程只读取同步后的副本，不借用 [`App`]；系统拖动窗口的模态循环期间重入窗口过程时，

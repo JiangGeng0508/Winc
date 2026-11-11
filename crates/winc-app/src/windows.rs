@@ -1,10 +1,15 @@
 //! Windows 上交由系统的操作，读取的系统设置，以及按屏幕刷新绘制动画的显示链接。
 
 mod display_link;
+mod keyboard;
 mod touch;
 
 pub use display_link::DisplayLink;
+pub use keyboard::TouchKeyboard;
 pub use touch::{WindowHitTest, WindowInput};
+
+#[cfg(test)]
+pub(crate) use touch::native_tests::inject_contact;
 
 use std::io;
 use std::os::windows::ffi::OsStrExt;

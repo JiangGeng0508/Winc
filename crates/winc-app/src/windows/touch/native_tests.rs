@@ -381,7 +381,12 @@ fn inject_drag(hwnd: isize, start: POINT, end: POINT) -> io::Result<()> {
     inject_contact(hwnd, start, end, 500)
 }
 
-fn inject_contact(hwnd: isize, start: POINT, end: POINT, settle_ms: u64) -> io::Result<()> {
+pub(crate) fn inject_contact(
+    hwnd: isize,
+    start: POINT,
+    end: POINT,
+    settle_ms: u64,
+) -> io::Result<()> {
     // 确认落指位置命中测试窗口，避免触摸注入到其他窗口。
     // SAFETY: `WindowFromPoint` 按值接收坐标，没有指针参数。
     if unsafe { WindowFromPoint(start) } as isize != hwnd {

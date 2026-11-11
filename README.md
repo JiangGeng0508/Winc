@@ -57,6 +57,12 @@ menu. Swipes stay in the region where they started and stop on release. Addition
 the current gesture; lift all fingers before starting another. On Windows, drag the title bar to
 move the window, double-tap it to maximize or restore, and drag the window edges to resize.
 Window dragging and edge snapping use the same native Windows behavior as mouse input.
+On Windows, tapping editable text, an input field, or the built-in terminal requests the touch
+keyboard through the system InputPane API, subject to Windows hardware keyboard and input policies.
+Swipes, long presses, read-only areas, and regular mouse clicks do not request it; no background
+polling is needed.
+Native accessibility text-role annotations and focus notifications keep the keyboard open on
+repeated taps. Tapping an input area after closing the keyboard requests it again.
 
 ## Platforms
 

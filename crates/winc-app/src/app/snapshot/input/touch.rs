@@ -5,6 +5,9 @@
 use super::*;
 use winit::event::{DeviceId, Touch, TouchPhase};
 
+#[cfg(windows)]
+mod native;
+
 fn touch(app: &mut App, id: u64, phase: TouchPhase, x: f32, y: f32) {
     app.on_touch(Touch {
         device_id: DeviceId::dummy(),
@@ -32,7 +35,9 @@ fn touch_taps_position_the_caret_at_high_dpi_and_double_taps_select() {
     let y = app.layout.text.y + app.fonts.line_height / 2.0;
     touch(&mut app, 1, TouchPhase::Started, x, y);
     assert_eq!(app.editor.active().unwrap().selection.head, 0);
+    assert_eq!(app.touch.keyboard_requests, 0);
     touch(&mut app, 1, TouchPhase::Ended, x, y);
+    assert_eq!(app.touch.keyboard_requests, 1);
     let selected = app.editor.active().unwrap().selection;
     assert!(selected.is_empty());
     assert_eq!(selected.head, 3);
@@ -43,6 +48,157 @@ fn touch_taps_position_the_caret_at_high_dpi_and_double_taps_select() {
         winc_core::Selection::new(0, 5)
     );
     assert_eq!(app.drag, Drag::None);
+    assert_eq!(app.touch.keyboard_requests, 2);
+}
+
+fn tap(app: &mut App, x: f32, y: f32) {
+    touch(app, 1, TouchPhase::Started, x, y);
+    touch(app, 1, TouchPhase::Ended, x, y);
+}
+
+#[test]
+fn touch_keyboard_only_opens_for_editable_text_not_mouse_or_readonly_text() {
+    let mut app = document();
+    let x = app.layout.text.x + TEXT_PAD + app.cell * 3.0;
+    let y = app.layout.text.y + app.fonts.line_height / 2.0;
+    app.on_mouse_move(x, y);
+    app.on_mouse_down(MouseButton::Left);
+    app.on_mouse_up(MouseButton::Left);
+    assert_eq!(app.touch.keyboard_requests, 0);
+    tap(&mut app, x, y);
+    assert_eq!(app.touch.keyboard_requests, 1);
+    app.editor.active_mut().unwrap().readonly = true;
+    tap(&mut app, x, y);
+    assert_eq!(app.touch.keyboard_requests, 1);
+    app.editor.active_mut().unwrap().readonly = false;
+    let gutter = app.layout.gutter.x + 2.0;
+    tap(&mut app, gutter, y);
+    assert_eq!(app.touch.keyboard_requests, 1);
+}
+
+#[test]
+fn touch_keyboard_distinguishes_editable_and_readonly_diff_sides() {
+    use winc_editor::diff_view::{DiffSide, DiffView, LEFT, RIGHT};
+
+    let mut app = document();
+    let language = winc_syntax::detect("touch.rs");
+    let view = DiffView::new(
+        DiffSide::new("before", "let a = 1;\n", None, language),
+        DiffSide::new(
+            "after",
+            "let a = 2;\n",
+            Some(PathBuf::from("touch.rs")),
+            language,
+        ),
+    );
+    app.editor.show_diff("touch.rs", view);
+    paint(&mut app);
+    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
+    let parts = crate::app::diff_parts(app.layout.editor, view, app.cell);
+    let y = parts.body.y + app.fonts.line_height / 2.0;
+    let left = parts.panes[LEFT].text.x + 30.0;
+    let right = parts.panes[RIGHT].text.x + 30.0;
+    assert_eq!(app.touch_keyboard_at(left, y), None);
+    assert_eq!(app.touch_keyboard_at(right, y), Some(Focus::Editor));
+    // 历史差异的右侧同样只读，不能因为它与可编辑一侧使用相同布局而弹键盘。
+    app.editor
+        .active_mut()
+        .unwrap()
+        .diff
+        .as_deref_mut()
+        .unwrap()
+        .new
+        .path = None;
+    tap(&mut app, right, y);
+    assert_eq!(app.touch.keyboard_requests, 0);
+}
+
+#[test]
+fn touch_keyboard_follows_search_and_settings_fields() {
+    let mut app = document();
+    app.open_search(true);
+    paint(&mut app);
+    for (focus, area) in [
+        (Focus::Search, app.find.input.view.area),
+        (Focus::Replace, app.find.replace_input.view.area),
+    ] {
+        let before = app.touch.keyboard_requests;
+        tap(&mut app, area.x + 4.0, area.y + area.h / 2.0);
+        assert_eq!(app.focus, focus);
+        assert_eq!(app.touch.keyboard_requests, before + 1);
+        app.on_ime(winit::event::Ime::Commit("触摸".into()));
+        assert!(app.focused_field().unwrap().text().contains("触摸"));
+    }
+    app.open_settings();
+    app.settings.motion = None;
+    paint(&mut app);
+    let area = app.settings.search.view.area;
+    tap(&mut app, area.x + 4.0, area.y + area.h / 2.0);
+    assert_eq!(app.focus, Focus::SettingsSearch);
+    assert_eq!(app.touch.keyboard_requests, 3);
+    // 设置浮层遮挡编辑区，点击遮罩关闭它时不能穿透弹键盘。
+    let x = app.layout.text.x + 4.0;
+    let y = app.layout.text.bottom() - 4.0;
+    tap(&mut app, x, y);
+    assert_eq!(app.touch.keyboard_requests, 3);
+}
+
+#[test]
+fn touch_keyboard_does_not_open_when_dismissing_a_picker_or_context_menu() {
+    let dir = sample_folder("touch-keyboard-picker");
+    let mut app = app_with(&dir.join("short.rs"), false);
+    paint(&mut app);
+    let x = app.layout.text.x + TEXT_PAD + app.cell * 3.0;
+    let y = app.layout.text.bottom() - 10.0;
+    app.on_mouse_move(x, y);
+    app.on_mouse_down(MouseButton::Right);
+    assert!(app.popup().is_some());
+    let outside = app.layout.text.y + 10.0;
+    tap(&mut app, x + 40.0, outside);
+    assert_eq!(app.touch.keyboard_requests, 0);
+    app.open_picker();
+    assert!(app.picker.open);
+    app.picker.fold = None;
+    paint(&mut app);
+    let area = app.picker.input.view.area;
+    tap(&mut app, area.x + 4.0, area.y + area.h / 2.0);
+    assert_eq!(app.touch.keyboard_requests, 1);
+    tap(&mut app, x, y);
+    assert!(!app.picker.open);
+    assert_eq!(app.touch.keyboard_requests, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn touch_keyboard_accepts_a_powershell_terminal_but_not_its_header() {
+    let mut app = document();
+    app.config.terminal_enabled = Some(true);
+    app.terminal.open = true;
+    app.terminal.height = crate::app::terminal::DEFAULT_HEIGHT;
+    app.relayout();
+    let size = app.terminal_size();
+    let mut term = winc_pty::Terminal::new(usize::from(size.cols), usize::from(size.rows), 1000);
+    term.feed(b"PS C:\\> ");
+    let mut tab = crate::app::terminal::TermTab::new(1, size);
+    tab.apply(term.take_frame().unwrap());
+    tab.process = "pwsh.exe".into();
+    app.terminal.tabs.push(tab);
+    paint(&mut app);
+    let grid = app.terminal_grid();
+    let (x, y) = (
+        grid.x + 4.5 * app.terminal_cell,
+        grid.y + app.fonts.terminal_line_height / 2.0,
+    );
+    tap(&mut app, x, y);
+    assert_eq!(app.focus, Focus::Terminal);
+    assert_eq!(app.touch.keyboard_requests, 1);
+    let header = app.hits.terminal[0].0;
+    assert_eq!(app.touch_keyboard_at(header.x + 2.0, header.y + 2.0), None);
+    app.terminal.tab_mut().unwrap().ended = Some(crate::app::terminal::TabEnd::Exited(0));
+    tap(&mut app, x, y);
+    assert_eq!(app.touch.keyboard_requests, 1);
+    app.terminal.tabs.clear();
+    assert_eq!(app.touch_keyboard_at(x, y), None);
 }
 
 #[test]
@@ -148,6 +304,7 @@ fn touch_scrolls_by_logical_pixels_without_moving_the_selection() {
     assert_eq!(doc.selection, selection);
     assert_eq!(app.drag, Drag::None);
     assert!(app.wheel.glide.is_none());
+    assert_eq!(app.touch.keyboard_requests, 0);
 }
 
 #[test]
@@ -188,6 +345,7 @@ fn touch_long_press_opens_a_menu_once_and_release_keeps_it_open() {
     touch(&mut app, 1, TouchPhase::Ended, x, y);
     assert!(app.popup().is_some());
     assert_eq!(app.drag, Drag::None);
+    assert_eq!(app.touch.keyboard_requests, 0);
 }
 
 #[test]
@@ -206,6 +364,7 @@ fn cancelled_or_interrupted_touch_never_places_the_caret() {
         assert_eq!(app.editor.active().unwrap().selection.head, 0);
         assert_eq!(app.drag, Drag::None);
         assert!(!app.touch.active());
+        assert_eq!(app.touch.keyboard_requests, 0);
     }
 }
 
@@ -230,6 +389,7 @@ fn touch_drags_the_scrollbar_and_cancellation_releases_it() {
     app.cancel_touch();
     assert_eq!(app.drag, Drag::None);
     assert_eq!(app.hover, Hover::None);
+    assert_eq!(app.touch.keyboard_requests, 0);
 }
 
 #[test]
@@ -288,6 +448,7 @@ fn additional_fingers_end_a_scrollbar_drag_without_starting_a_new_action() {
     assert_eq!(app.editor.active().unwrap().scroll_line, scroll);
     assert!(app.popup().is_none());
     assert!(!app.touch.active());
+    assert_eq!(app.touch.keyboard_requests, 0);
 }
 
 #[test]

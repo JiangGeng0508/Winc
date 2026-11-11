@@ -970,6 +970,24 @@ impl App {
     ///
     /// 窗口按系统的逻辑坐标接收位置，界面的逻辑像素乘以界面缩放倍数后传入。
     pub(in crate::app) fn update_ime_area(&mut self) {
+        #[cfg(windows)]
+        if let Some(window) = &self.window.handle {
+            let editable = self.focus.is_field()
+                || (self.focus == Focus::Terminal
+                    && self.terminal.tab().is_some_and(|t| t.ended.is_none()))
+                || (self.focus == Focus::Editor
+                    && self.editor.active().is_some_and(|d| {
+                        (d.edits_text() && d.text_editable())
+                            || d.diff
+                                .as_ref()
+                                .is_some_and(|v| v.editing && v.new.path.is_some())
+                    }));
+            let editable = editable && self.alert.is_none() && self.popup().is_none();
+            let _ = self
+                .ime
+                .touch_keyboard
+                .update(window, self.window.focused && editable);
+        }
         if let (Some(area), Some(window)) = (self.ime.cursor, &self.window.handle)
             && self.ime.last_area != Some(area)
         {
@@ -986,6 +1004,9 @@ impl App {
 /// 输入法候选框的定位状态。
 #[derive(Default)]
 pub struct ImeState {
+    /// 当前自绘输入区在 Windows 中的文本角色与焦点标注。
+    #[cfg(windows)]
+    pub(in crate::app) touch_keyboard: crate::windows::TouchKeyboard,
     /// 输入法候选框应出现的位置。
     pub(crate) cursor: Option<winc_render::Rect>,
     pub(in crate::app) last_area: Option<winc_render::Rect>,

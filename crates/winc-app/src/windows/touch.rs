@@ -24,7 +24,7 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
 #[cfg(test)]
-mod native_tests;
+pub(crate) mod native_tests;
 
 /// 窗口的命中测试区域（逻辑像素，客户区坐标）。
 ///

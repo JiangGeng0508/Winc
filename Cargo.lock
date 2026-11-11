@@ -3152,6 +3152,7 @@ dependencies = [
  "winc-syntax",
  "winc-typeset",
  "winc-version",
+ "windows",
  "windows-sys 0.59.0",
  "winit",
  "zbus",

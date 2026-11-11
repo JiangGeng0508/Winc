@@ -319,6 +319,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.update_foreground(focused);
                 // 离开窗口时停止录制按键，菜单项的快捷键随之恢复，不影响别的窗口和应用。
                 if !focused {
+                    #[cfg(windows)]
+                    self.ime.touch_keyboard.clear();
                     self.cancel_touch();
                     self.set_recording(false);
                 }
