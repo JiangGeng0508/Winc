@@ -81,7 +81,7 @@ winc file.rs:12:5       # open a file at a line and column
 winc --wait file        # wait until the tab closes, for example as the Git editor
 ```
 
-The Windows installers and the Linux deb package add `winc` to `PATH`. On macOS and with the Linux AppImage, run **Shell Command: Install winc Command** from the command palette.
+The Windows installers and the Linux deb and Arch packages add `winc` to `PATH`; the Windows portable ZIP leaves `PATH` unchanged. On macOS, choose **Winc → Install winc Command…** from the menu bar or run **Shell Command: Install winc Command** from the command palette; with the Linux AppImage, use the command palette.
 
 On macOS the app is started by the system, so it does not inherit the environment variables of your shell. Use `winc --new-instance` to keep them.
 
@@ -118,10 +118,13 @@ The workspace is split into crates by responsibility:
 | `winc-editor` | Editor logic: documents, file tree, search, Git, and formatting |
 | `winc-render` | Rendering: glyphs, rasterization, and presentation |
 | `winc-preview` | Previews for images, SVG, Markdown, and spreadsheets |
+| `winc-typeset` | Layout for the Markdown preview |
 | `winc-pty` | Terminal emulation and the pseudo-terminal helper process |
 | `winc-config` | Configuration and state files |
 | `winc-i18n` | Interface strings (Fluent bundles) |
+| `winc-version` | The product version, read from the `VERSION` file |
 | `winc-app` | The application: windows, events, and views |
+| `winc` | The executable's entry point, which only calls into `winc-app` |
 | `xtask` | Development automation: tests, benchmarks, and packaging |
 
 ## Contributing

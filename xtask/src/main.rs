@@ -158,7 +158,7 @@ fn build_release(targets: &[&str]) -> Result<(), String> {
             "--release",
             "--locked",
             "-p",
-            "winc-app",
+            "winc",
             "-p",
             "winc-pty",
         ])
