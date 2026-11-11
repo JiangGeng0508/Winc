@@ -5,7 +5,7 @@
 
 #![allow(unsafe_code)]
 
-use super::{lerp, mix};
+use super::{Canvas, IRect, div255, lerp, mix};
 
 /// 定义一个按整段像素处理的函数，见模块说明。
 macro_rules! wide {
@@ -30,6 +30,27 @@ macro_rules! wide {
             body($($arg),*)
         }
     };
+}
+
+wide! {
+    /// 按已换算的覆盖率混合一个字形；一次选择指令集，整张蒙版复用。
+    fn coverage(canvas: &mut Canvas<'_>, area: IRect, data: &[u8], color: u32, visible: IRect) {
+        let alpha = (color >> 24) & 0xff;
+        let (width, cols) = (area.width(), visible.width());
+        for y in visible.y0..visible.y1 {
+            let src = (y - area.y0) as usize * width + (visible.x0 - area.x0) as usize;
+            let pixels = canvas.row(y, visible).iter_mut().zip(&data[src..src + cols]);
+            if alpha == 255 {
+                for (p, &m) in pixels {
+                    *p = mix(*p, color, u32::from(m));
+                }
+            } else {
+                for (p, &m) in pixels {
+                    *p = mix(*p, color, div255(alpha * u32::from(m)));
+                }
+            }
+        }
+    }
 }
 
 wide! {

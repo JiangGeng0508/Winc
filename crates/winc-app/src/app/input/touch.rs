@@ -66,6 +66,8 @@ struct Gesture {
     /// 落指时刻，用于判定长按。
     since: Instant,
     mode: Mode,
+    /// 落指吸附到分隔条时的偏移；只在本次直接拖动中沿用。
+    drag_offset: Point,
 }
 
 /// 单个窗口的触摸状态：未结束的接触点与正在识别的手势。
@@ -76,8 +78,6 @@ pub(in crate::app) struct TouchState {
     gesture: Option<Gesture>,
     /// 长按开始时的文字目标；抬手越过区域边界时菜单仍作用于原选区。
     selection: Option<MenuTarget>,
-    /// 落指吸附到分隔条时的偏移；整次拖动沿用，布局不会在第一帧跳动。
-    drag_offset: Point,
     /// 最近一次收到触摸事件的时刻。
     pub(in crate::app) last_event: Option<Instant>,
     /// 是否正在把一次点按作为鼠标点击发出；为真时连击判定按 [`TAP_SLOP`] 放宽位置偏差。
@@ -120,7 +120,7 @@ impl TouchState {
         touch: &Touch,
         point: Point,
         now: Instant,
-        direct: bool,
+        direct: Option<Point>,
     ) -> Option<Action> {
         let key = (touch.device_id, touch.id);
         self.last_event = Some(now);
@@ -132,13 +132,19 @@ impl TouchState {
             if self.contacts.len() > 1 {
                 return self.cancel_gesture();
             }
+            let origin = direct.unwrap_or(point);
             self.gesture = Some(Gesture {
-                origin: point,
-                last: point,
+                origin,
+                last: origin,
                 since: now,
-                mode: if direct { Mode::Drag } else { Mode::Pending },
+                mode: if direct.is_some() {
+                    Mode::Drag
+                } else {
+                    Mode::Pending
+                },
+                drag_offset: (origin.0 - point.0, origin.1 - point.1),
             });
-            return direct.then_some(Action::Press(point));
+            return direct.map(Action::Press);
         }
 
         if !self.contacts.contains(&key) {
@@ -152,6 +158,14 @@ impl TouchState {
         }
 
         let gesture = self.gesture.as_mut()?;
+        let point = if gesture.mode == Mode::Drag {
+            (
+                point.0 + gesture.drag_offset.0,
+                point.1 + gesture.drag_offset.1,
+            )
+        } else {
+            point
+        };
         let ended = touch.phase == TouchPhase::Ended;
         // 定时唤醒可能晚于这次移动/抬手；先按已经保持的时长识别长按，避免误转成滚动。
         if gesture.mode == Mode::Pending && now.duration_since(gesture.since) >= LONG_PRESS {
@@ -231,12 +245,13 @@ impl App {
     /// 处理一个触摸事件：坐标换算为逻辑像素后识别手势，转换为鼠标点击、滚动或拖动。
     pub(in crate::app) fn on_touch(&mut self, touch: Touch) {
         let scale = self.renderer.as_ref().map_or(1.0, Renderer::scale_factor);
-        let mut point = (
+        let point = (
             touch.location.x as f32 / scale,
             touch.location.y as f32 / scale,
         );
-        if touch.phase == TouchPhase::Started && !self.touch.active() {
-            self.touch.drag_offset = (0.0, 0.0);
+        let active = self.touch.active();
+        let starting = touch.phase == TouchPhase::Started && !active;
+        if starting {
             self.drop_drags();
             self.scroll_glide = None;
             self.wheel.glide = None;
@@ -245,7 +260,7 @@ impl App {
             self.on_mouse_move(point.0, point.1);
             if let Some(operation) = self.touch_window_at(point.0, point.1) {
                 // 登记接触点并置为 `Held`：此后的移动和抬手只结束本次接触，不产生点击或滚动。
-                self.touch.update(&touch, point, Instant::now(), false);
+                self.touch.update(&touch, point, Instant::now(), None);
                 if let Some(gesture) = self.touch.gesture.as_mut() {
                     gesture.mode = Mode::Held;
                 }
@@ -260,25 +275,10 @@ impl App {
         {
             self.last_click = None;
         }
-        let direct = if touch.phase == TouchPhase::Started && !self.touch.active() {
-            if let Some(at) = self.touch_drag_point(point.0, point.1) {
-                self.touch.drag_offset = (at.0 - point.0, at.1 - point.1);
-                point = at;
-                true
-            } else {
-                false
-            }
+        let direct = if starting {
+            self.touch_drag_point(point.0, point.1)
         } else {
-            if self
-                .touch
-                .gesture
-                .as_ref()
-                .is_some_and(|g| g.mode == Mode::Drag)
-            {
-                point.0 += self.touch.drag_offset.0;
-                point.1 += self.touch.drag_offset.1;
-            }
-            false
+            None
         };
         let action = self.touch.update(&touch, point, Instant::now(), direct);
         if let Some(action) = action {
@@ -288,9 +288,11 @@ impl App {
             self.cursor_inside = false;
             self.set_hover(Hover::None);
         }
-        // 命中测试的结果取决于是否有接触点（见 `App::window_hit_test`），落指和抬手后需要同步。
+        // 只有首指落下和末指结束改变系统命中区域；移动或增减其他接触点无需重复加锁同步。
         #[cfg(windows)]
-        self.sync_window_input();
+        if active != self.touch.active() {
+            self.sync_window_input();
+        }
     }
 
     /// 是否忽略当前的鼠标事件。

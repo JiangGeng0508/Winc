@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// 分隔条触摸命中带的半宽（逻辑像素），容纳手指相对细线的落点偏差。
+const TOUCH_DIVIDER_RADIUS: f32 = 12.0;
+
 impl App {
     /// 点按位置对应的可输入焦点；沿用点击命中与字段布局，不把可选中的只读文字当作输入框。
     ///
@@ -272,7 +275,6 @@ impl App {
         }
         // 不扩大到顶栏和输入框、按钮上；顶栏仍交给系统的精确命中测试。
         if y < TOP_BAR_END
-            || self.field_at(x, y).is_some()
             || !matches!(
                 target,
                 Target::None
@@ -293,13 +295,18 @@ impl App {
             return None;
         }
         let log = if self.log_active() {
-            let details = self.log_parts().details;
-            winc_render::Rect::new(details.x - 3.0, details.y, 6.0, details.h)
+            self.hits
+                .log
+                .iter()
+                .find(|(_, target)| *target == crate::app::git::log::LogTarget::Divider)
+                .map_or(winc_render::Rect::default(), |(rect, _)| *rect)
         } else {
             winc_render::Rect::default()
         };
-        let mut closest = None;
-        let mut distance = f32::MAX;
+        // 先按几何筛选并排序，再验证最上层目标；普通正文点按无需查询字段，
+        // 多条分隔线的命中带重叠时也优先只检查最近的一条。
+        let mut candidates = [(0.0, (0.0, 0.0)); 5];
+        let mut count = 0;
         for (rect, vertical) in [
             (self.layout.splitter, true),
             (self.layout.terminal_divider, self.terminal_right()),
@@ -325,23 +332,30 @@ impl App {
                     x >= rect.x && x < rect.right(),
                 )
             };
-            if along
-                && gap <= 12.0
-                && gap < distance
-                && matches!(
-                    self.target_at(at.0, at.1),
-                    Target::Splitter
-                        | Target::TerminalDivider
-                        | Target::SplitDivider
-                        | Target::OutlineDivider
-                        | Target::Log(crate::app::git::log::LogTarget::Divider)
-                )
-            {
-                closest = Some(at);
-                distance = gap;
+            if along && gap <= TOUCH_DIVIDER_RADIUS {
+                candidates[count] = (gap, at);
+                count += 1;
             }
         }
-        closest
+        if count == 0 || self.field_at(x, y).is_some() {
+            return None;
+        }
+        // 保持同距候选的原始顺序，使交叉处的优先级确定。
+        let candidates = &mut candidates[..count];
+        if count > 1 {
+            candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
+        candidates.iter().find_map(|(_, at)| {
+            matches!(
+                self.target_at(at.0, at.1),
+                Target::Splitter
+                    | Target::TerminalDivider
+                    | Target::SplitDivider
+                    | Target::OutlineDivider
+                    | Target::Log(crate::app::git::log::LogTarget::Divider)
+            )
+            .then_some(*at)
+        })
     }
 
     /// 返回窗口坐标 (`x`, `y`)（逻辑像素）处的悬停目标。

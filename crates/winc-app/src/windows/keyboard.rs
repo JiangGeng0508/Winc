@@ -21,31 +21,19 @@ use winit::window::Window;
 mod focus;
 pub use focus::TouchKeyboard;
 
-/// 为 `window` 请求触摸键盘；已显示时保持原状。只在窗口线程调用。
+/// 为 `hwnd` 请求触摸键盘；已显示时保持原状。复用本线程的可见性查询接口。
 ///
 /// # Errors
 ///
-/// 无法取得窗口句柄、初始化 `WinRT`、查询可见性或调用 `InputPane` 时返回系统错误。
-fn show_touch_keyboard(window: &Window) -> windows::core::Result<bool> {
-    let handle = window
-        .window_handle()
-        .map_err(|_| windows::core::Error::from_hresult(E_HANDLE))?;
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return Err(windows::core::Error::from_hresult(E_HANDLE));
-    };
-    // SAFETY: 在窗口线程使用相同的 STA 模式，成功后配对释放。
-    unsafe { RoInitialize(RO_INIT_SINGLETHREADED) }?;
-    let _apartment = Apartment;
-    // SAFETY: COM 已初始化；创建系统接口且不聚合。
-    let input: IFrameworkInputPane =
-        unsafe { CoCreateInstance(&FrameworkInputPane, None, CLSCTX_INPROC_SERVER) }?;
+/// 查询可见性或调用 `InputPane` 失败时返回系统错误。
+fn show_touch_keyboard(hwnd: HWND, input: &IFrameworkInputPane) -> windows::core::Result<bool> {
     // Location 查询屏幕上的键盘区域，不依赖它是否遮挡本窗口，浮动键盘也可识别。
     // SAFETY: input 是本线程上的有效 COM 接口。
     let location = unsafe { input.Location() }?;
     show_if_hidden(location, || {
         let interop = windows::core::factory::<InputPane, IInputPaneInterop>()?;
-        // SAFETY: window 是当前线程上存活的顶层窗口；接口不逃逸到其他线程。
-        let pane = unsafe { interop.GetForWindow::<InputPane>(HWND(handle.hwnd.get() as _)) }?;
+        // SAFETY: 调用方持有当前线程上的顶层窗口和 COM 初始化 guard；接口不逃逸到其他线程。
+        let pane = unsafe { interop.GetForWindow::<InputPane>(hwnd) }?;
         pane.TryShow()
     })
 }
@@ -123,11 +111,17 @@ mod tests {
                 let window = event_loop
                     .create_window(Window::default_attributes().with_visible(false))
                     .unwrap();
-                // 验证真实的 WinRT 激活、HWND 互操作和连续调用后的 COM 初始化/释放配对。
+                let window = std::sync::Arc::new(window);
+                let mut keyboard = TouchKeyboard::default();
+                // 验证真实的 WinRT 激活、HWND 互操作及接口复用；clear 后重新创建并配对释放。
                 // TryShow 是 best effort；接受请求不代表键盘实际可见，结果由当前系统策略决定。
 
                 for _ in 0..2 {
-                    let _ = show_touch_keyboard(&window).expect("InputPane desktop interop");
+                    let _ = keyboard.show(&window).expect("InputPane desktop interop");
+                    let _ = keyboard
+                        .show(&window)
+                        .expect("cached InputPane desktop interop");
+                    keyboard.clear();
                 }
                 event_loop.exit();
             }

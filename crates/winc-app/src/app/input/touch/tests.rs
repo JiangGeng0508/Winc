@@ -17,16 +17,16 @@ fn a_tap_waits_for_release_and_tolerates_jitter() {
     let mut state = TouchState::default();
     let now = Instant::now();
     assert_eq!(
-        state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, false),
+        state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, None),
         None
     );
     assert_eq!(state.deadline(), Some(now + LONG_PRESS));
     assert_eq!(
-        state.update(&event(1, TouchPhase::Moved), (23.0, 32.0), now, false),
+        state.update(&event(1, TouchPhase::Moved), (23.0, 32.0), now, None),
         None
     );
     assert_eq!(
-        state.update(&event(1, TouchPhase::Ended), (24.0, 33.0), now, false),
+        state.update(&event(1, TouchPhase::Ended), (24.0, 33.0), now, None),
         Some(Action::Tap((20.0, 30.0)))
     );
     assert!(!state.active());
@@ -37,11 +37,11 @@ fn a_tap_waits_for_release_and_tolerates_jitter() {
 fn scrolling_keeps_the_origin_and_includes_the_threshold_distance() {
     let mut state = TouchState::default();
     let now = Instant::now();
-    state.update(&event(1, TouchPhase::Started), (100.0, 100.0), now, false);
+    state.update(&event(1, TouchPhase::Started), (100.0, 100.0), now, None);
     // 4 像素未越过 `SLOP`；越过时的增量从落指位置算起，包含此前未滚动的距离。
-    state.update(&event(1, TouchPhase::Moved), (100.0, 96.0), now, false);
+    state.update(&event(1, TouchPhase::Moved), (100.0, 96.0), now, None);
     assert_eq!(
-        state.update(&event(1, TouchPhase::Moved), (100.0, 80.0), now, false),
+        state.update(&event(1, TouchPhase::Moved), (100.0, 80.0), now, None),
         Some(Action::Scroll {
             origin: (100.0, 100.0),
             delta: (0.0, -20.0)
@@ -50,7 +50,7 @@ fn scrolling_keeps_the_origin_and_includes_the_threshold_distance() {
     assert_eq!(state.deadline(), None);
     assert_eq!(state.hold(now + LONG_PRESS), None);
     assert_eq!(
-        state.update(&event(1, TouchPhase::Ended), (110.0, 70.0), now, false),
+        state.update(&event(1, TouchPhase::Ended), (110.0, 70.0), now, None),
         Some(Action::Scroll {
             origin: (100.0, 100.0),
             delta: (10.0, -10.0)
@@ -62,9 +62,9 @@ fn scrolling_keeps_the_origin_and_includes_the_threshold_distance() {
 fn release_without_a_move_event_can_still_be_a_swipe() {
     let mut state = TouchState::default();
     let now = Instant::now();
-    state.update(&event(1, TouchPhase::Started), (0.0, 0.0), now, false);
+    state.update(&event(1, TouchPhase::Started), (0.0, 0.0), now, None);
     assert_eq!(
-        state.update(&event(1, TouchPhase::Ended), (0.0, -50.0), now, false),
+        state.update(&event(1, TouchPhase::Ended), (0.0, -50.0), now, None),
         Some(Action::Scroll {
             origin: (0.0, 0.0),
             delta: (0.0, -50.0)
@@ -76,7 +76,7 @@ fn release_without_a_move_event_can_still_be_a_swipe() {
 fn a_long_press_fires_once_without_a_move_and_never_clicks_on_release() {
     let mut state = TouchState::default();
     let now = Instant::now();
-    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, false);
+    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, None);
     assert_eq!(
         state.hold(now + LONG_PRESS - Duration::from_millis(1)),
         None
@@ -95,7 +95,7 @@ fn a_long_press_fires_once_without_a_move_and_never_clicks_on_release() {
             &event(1, TouchPhase::Ended),
             (20.0, 30.0),
             now + LONG_PRESS,
-            false
+            None
         ),
         None
     );
@@ -105,13 +105,13 @@ fn a_long_press_fires_once_without_a_move_and_never_clicks_on_release() {
 fn release_after_the_deadline_does_not_depend_on_timer_order() {
     let mut state = TouchState::default();
     let now = Instant::now();
-    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, false);
+    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, None);
     assert_eq!(
         state.update(
             &event(1, TouchPhase::Ended),
             (20.0, 30.0),
             now + LONG_PRESS,
-            false
+            None
         ),
         Some(Action::Hold {
             origin: (20.0, 30.0),
@@ -125,17 +125,17 @@ fn release_after_the_deadline_does_not_depend_on_timer_order() {
 fn cancelled_contacts_and_late_events_do_not_click() {
     let mut state = TouchState::default();
     let now = Instant::now();
-    state.update(&event(1, TouchPhase::Started), (0.0, 0.0), now, false);
+    state.update(&event(1, TouchPhase::Started), (0.0, 0.0), now, None);
     assert_eq!(
-        state.update(&event(1, TouchPhase::Cancelled), (0.0, 0.0), now, false),
+        state.update(&event(1, TouchPhase::Cancelled), (0.0, 0.0), now, None),
         None
     );
     assert_eq!(
-        state.update(&event(1, TouchPhase::Ended), (0.0, 0.0), now, false),
+        state.update(&event(1, TouchPhase::Ended), (0.0, 0.0), now, None),
         None
     );
     assert_eq!(
-        state.update(&event(2, TouchPhase::Moved), (0.0, 0.0), now, false),
+        state.update(&event(2, TouchPhase::Moved), (0.0, 0.0), now, None),
         None
     );
     assert_eq!(state.hold(now + LONG_PRESS), None);
@@ -147,22 +147,22 @@ fn multiple_contacts_cancel_until_every_finger_is_up() {
     let mut state = TouchState::default();
     let now = Instant::now();
     for id in [1, 2] {
-        state.update(&event(id, TouchPhase::Started), (0.0, 0.0), now, false);
+        state.update(&event(id, TouchPhase::Started), (0.0, 0.0), now, None);
     }
     assert_eq!(state.deadline(), None);
-    state.update(&event(1, TouchPhase::Ended), (0.0, 0.0), now, false);
+    state.update(&event(1, TouchPhase::Ended), (0.0, 0.0), now, None);
     assert!(state.active());
     assert_eq!(
-        state.update(&event(2, TouchPhase::Moved), (0.0, -50.0), now, false),
+        state.update(&event(2, TouchPhase::Moved), (0.0, -50.0), now, None),
         None
     );
     assert_eq!(
-        state.update(&event(2, TouchPhase::Ended), (0.0, -50.0), now, false),
+        state.update(&event(2, TouchPhase::Ended), (0.0, -50.0), now, None),
         None
     );
-    state.update(&event(3, TouchPhase::Started), (20.0, 30.0), now, false);
+    state.update(&event(3, TouchPhase::Started), (20.0, 30.0), now, None);
     assert_eq!(
-        state.update(&event(3, TouchPhase::Ended), (20.0, 30.0), now, false),
+        state.update(&event(3, TouchPhase::Ended), (20.0, 30.0), now, None),
         Some(Action::Tap((20.0, 30.0)))
     );
 }
@@ -172,39 +172,100 @@ fn direct_drags_release_and_cancel_without_turning_into_taps() {
     let mut state = TouchState::default();
     let now = Instant::now();
     assert_eq!(
-        state.update(&event(1, TouchPhase::Started), (10.0, 20.0), now, true),
+        state.update(
+            &event(1, TouchPhase::Started),
+            (10.0, 20.0),
+            now,
+            Some((10.0, 20.0))
+        ),
         Some(Action::Press((10.0, 20.0)))
     );
     assert_eq!(state.deadline(), None);
     assert_eq!(
-        state.update(&event(1, TouchPhase::Moved), (10.0, 25.0), now, false),
+        state.update(&event(1, TouchPhase::Moved), (10.0, 25.0), now, None),
         Some(Action::Move((10.0, 25.0)))
     );
     assert_eq!(
-        state.update(&event(1, TouchPhase::Ended), (10.0, 30.0), now, false),
+        state.update(&event(1, TouchPhase::Ended), (10.0, 30.0), now, None),
         Some(Action::Release((10.0, 30.0)))
     );
-    state.update(&event(2, TouchPhase::Started), (10.0, 20.0), now, true);
+    state.update(
+        &event(2, TouchPhase::Started),
+        (10.0, 20.0),
+        now,
+        Some((10.0, 20.0)),
+    );
     assert_eq!(
-        state.update(&event(3, TouchPhase::Started), (20.0, 20.0), now, true),
+        state.update(
+            &event(3, TouchPhase::Started),
+            (20.0, 20.0),
+            now,
+            Some((20.0, 20.0))
+        ),
         Some(Action::CancelDrag)
     );
     assert_eq!(
-        state.update(&event(2, TouchPhase::Ended), (10.0, 20.0), now, false),
+        state.update(&event(2, TouchPhase::Ended), (10.0, 20.0), now, None),
         None
     );
+}
+
+#[test]
+fn snapped_drags_keep_the_offset_until_release_and_reset_after_cancel() {
+    let mut state = TouchState::default();
+    let now = Instant::now();
+    for phase in [TouchPhase::Ended, TouchPhase::Cancelled] {
+        assert_eq!(
+            state.update(
+                &event(1, TouchPhase::Started),
+                (18.0, 28.0),
+                now,
+                Some((10.0, 20.0))
+            ),
+            Some(Action::Press((10.0, 20.0)))
+        );
+        // 重复落指不能改变已经吸附的坐标系。
+        assert_eq!(
+            state.update(
+                &event(1, TouchPhase::Started),
+                (30.0, 40.0),
+                now,
+                Some((50.0, 60.0))
+            ),
+            None
+        );
+        assert_eq!(
+            state.update(&event(1, TouchPhase::Moved), (18.0, 28.0), now, None),
+            Some(Action::Move((10.0, 20.0)))
+        );
+        assert_eq!(
+            state.update(&event(1, phase), (58.0, 68.0), now, None),
+            Some(if phase == TouchPhase::Ended {
+                Action::Release((50.0, 60.0))
+            } else {
+                Action::CancelDrag
+            })
+        );
+        assert!(!state.active());
+        // 随后的普通点按使用原始落点，不继承已经结束的拖动偏移。
+        state.update(&event(2, TouchPhase::Started), (18.0, 28.0), now, None);
+        assert_eq!(
+            state.update(&event(2, TouchPhase::Ended), (18.0, 28.0), now, None),
+            Some(Action::Tap((18.0, 28.0)))
+        );
+    }
 }
 
 #[test]
 fn duplicate_starts_do_not_reset_a_gesture() {
     let mut state = TouchState::default();
     let now = Instant::now();
-    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, false);
+    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, None);
     state.update(
         &event(1, TouchPhase::Started),
         (30.0, 40.0),
         now + LONG_PRESS,
-        false,
+        None,
     );
     assert_eq!(
         state.hold(now + LONG_PRESS),
@@ -220,13 +281,13 @@ fn duplicate_starts_do_not_reset_a_gesture() {
 fn movement_after_a_delayed_long_press_timer_does_not_start_scrolling() {
     let mut state = TouchState::default();
     let now = Instant::now();
-    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, false);
+    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, None);
     assert_eq!(
         state.update(
             &event(1, TouchPhase::Moved),
             (80.0, 60.0),
             now + LONG_PRESS,
-            false
+            None
         ),
         Some(Action::Hold {
             origin: (20.0, 30.0),
@@ -242,7 +303,7 @@ fn movement_after_a_delayed_long_press_timer_does_not_start_scrolling() {
             &event(1, TouchPhase::Moved),
             (90.0, 60.0),
             now + LONG_PRESS,
-            false
+            None
         ),
         Some(Action::Move((90.0, 60.0)))
     );
@@ -251,7 +312,7 @@ fn movement_after_a_delayed_long_press_timer_does_not_start_scrolling() {
             &event(1, TouchPhase::Ended),
             (100.0, 60.0),
             now + LONG_PRESS,
-            false
+            None
         ),
         Some(Action::SelectionRelease((100.0, 60.0)))
     );
@@ -262,7 +323,7 @@ fn movement_after_a_delayed_long_press_timer_does_not_start_scrolling() {
 fn another_finger_cancels_selection_without_opening_a_menu() {
     let mut state = TouchState::default();
     let now = Instant::now();
-    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, false);
+    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, None);
     state.hold(now + LONG_PRESS);
     state.gesture.as_mut().unwrap().mode = Mode::Select;
     assert_eq!(
@@ -270,7 +331,7 @@ fn another_finger_cancels_selection_without_opening_a_menu() {
             &event(2, TouchPhase::Started),
             (80.0, 60.0),
             now + LONG_PRESS,
-            false
+            None
         ),
         Some(Action::CancelDrag)
     );
@@ -280,7 +341,7 @@ fn another_finger_cancels_selection_without_opening_a_menu() {
                 &event(id, TouchPhase::Ended),
                 (100.0, 60.0),
                 now + LONG_PRESS,
-                false
+                None
             ),
             None
         );

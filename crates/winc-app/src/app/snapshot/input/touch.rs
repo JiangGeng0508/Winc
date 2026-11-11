@@ -58,6 +58,43 @@ fn tap(app: &mut App, x: f32, y: f32) {
 }
 
 #[test]
+fn ime_and_touch_keyboard_share_editability_and_clear_stale_composition() {
+    let mut app = document();
+    assert!(app.takes_text());
+    // 窗口暂时失焦不等于控件失去可编辑状态。
+    app.window.focused = false;
+    app.update_ime_area();
+    assert!(app.takes_text());
+    app.on_ime(winit::event::Ime::Preedit("组字".into(), None));
+    app.focus = Focus::Tree;
+    app.dirty = false;
+    app.update_ime_area();
+    assert!(!app.takes_text());
+    assert!(app.preedit.is_empty());
+    assert!(app.dirty);
+
+    app.open_search(false);
+    assert!(app.takes_text());
+    app.on_ime(winit::event::Ime::Preedit("字段组字".into(), None));
+    assert!(!app.field_preedit.is_empty());
+    app.close_search();
+    app.editor.active_mut().unwrap().readonly = true;
+    app.update_ime_area();
+    assert!(!app.takes_text());
+    assert!(app.field_preedit.is_empty());
+
+    app.editor.active_mut().unwrap().readonly = false;
+    assert!(app.takes_text());
+    let text = app.layout.text;
+    app.on_mouse_move(text.x + 100.0, text.y + 40.0);
+    app.on_mouse_down(MouseButton::Right);
+    assert!(app.popup().is_some());
+    assert!(!app.takes_text());
+    app.dismiss_popup();
+    assert!(app.takes_text());
+}
+
+#[test]
 fn touch_keyboard_only_opens_for_editable_text_not_mouse_or_readonly_text() {
     let mut app = document();
     let x = app.layout.text.x + TEXT_PAD + app.cell * 3.0;
@@ -361,10 +398,19 @@ fn touch_layout_dividers_accept_finger_offsets_and_keep_dragging() {
     let dir = sample_folder("touch-layout-dividers");
     let path = dir.join("layout.md");
     std::fs::write(&path, "# Layout\n\nhello world\n").unwrap();
-    for kind in 0..4 {
+    for kind in 0..5 {
         for offset in [0.0, -8.0, 8.0] {
-            let mut app = app_with(&path, false);
-            if kind == 3 {
+            let mut app = if kind == 4 {
+                // 没有项目的文档仍可展开大纲，且没有文件树的水平滚动条覆盖命中带。
+                let mut app = blank_app(false);
+                app.new_file();
+                app
+            } else {
+                app_with(&path, false)
+            };
+            if kind == 4 {
+                app.run_action(crate::keymap::Action::ShowOutline);
+            } else if kind == 3 {
                 app.set_preview_mode(winc_editor::PreviewMode::Split);
             } else if kind != 0 {
                 app.config.terminal_enabled = Some(true);
@@ -378,13 +424,22 @@ fn touch_layout_dividers_accept_finger_offsets_and_keep_dragging() {
                 0 => (app.layout.splitter, app.sidebar.width),
                 1 => (app.layout.terminal_divider, app.layout.terminal.h),
                 2 => (app.layout.terminal_divider, app.layout.terminal.w),
-                _ => (app.layout.split_divider, app.layout.editor.w),
+                3 => (app.layout.split_divider, app.layout.editor.w),
+                _ => (app.outline_divider(), app.outline_list().h),
             };
             assert!(area.w > 0.0 && area.h > 0.0);
             let (x, y) = (
-                area.x + area.w / 2.0 + if kind == 1 { 0.0 } else { offset },
-                area.y + area.h / 2.0 + if kind == 1 { offset } else { 0.0 },
+                area.x + area.w / 2.0 + if matches!(kind, 1 | 4) { 0.0 } else { offset },
+                area.y + area.h / 2.0 + if matches!(kind, 1 | 4) { offset } else { 0.0 },
             );
+            if kind == 4 && offset > 0.0 {
+                // 大纲标题行本身是展开/收起按钮，扩大命中带不能抢走它的点按。
+                assert_eq!(app.touch_drag_point(x, y), None);
+                tap(&mut app, x, y);
+                assert!(!app.outline.open);
+                assert_eq!(app.drag, Drag::None);
+                continue;
+            }
             touch(&mut app, 1, TouchPhase::Started, x, y);
             assert!(
                 matches!(
@@ -392,12 +447,13 @@ fn touch_layout_dividers_accept_finger_offsets_and_keep_dragging() {
                     Drag::Splitter { .. }
                         | Drag::TerminalDivider { .. }
                         | Drag::SplitDivider { .. }
+                        | Drag::OutlineDivider { .. }
                 ),
                 "kind={kind}, offset={offset}, drag={:?}",
                 app.drag
             );
             let (dx, dy) = match kind {
-                1 => (0.0, -40.0),
+                1 | 4 => (0.0, -40.0),
                 2 => (-40.0, 0.0),
                 _ => (40.0, 0.0),
             };
@@ -416,7 +472,8 @@ fn touch_layout_dividers_accept_finger_offsets_and_keep_dragging() {
                 0 => app.sidebar.width,
                 1 => app.layout.terminal.h,
                 2 => app.layout.terminal.w,
-                _ => app.layout.editor.w,
+                3 => app.layout.editor.w,
+                _ => app.outline_list().h,
             };
             assert!(
                 (after - before - 40.0).abs() <= 1.0,
@@ -427,6 +484,90 @@ fn touch_layout_dividers_accept_finger_offsets_and_keep_dragging() {
             assert_eq!(app.touch.keyboard_requests, 0);
         }
     }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn touch_log_divider_uses_the_rendered_hit_band_and_keeps_dragging() {
+    let mut app = blank_app(false);
+    app.new_file();
+    let mut log = winc_editor::git::log::LogView::default();
+    let request = log.begin().unwrap();
+    log.finish(
+        request.generation,
+        Ok(vec![winc_editor::git::Commit {
+            oid: "a".repeat(40),
+            parents: Vec::new(),
+            author: "Author".into(),
+            email: "author@example.com".into(),
+            time: 0,
+            local: "1970-01-01 00:00".into(),
+            refs: Vec::new(),
+            subject: "Touch layout".into(),
+        }]),
+    );
+    app.editor.active_mut().unwrap().log = Some(Box::new(log));
+    app.relayout();
+    paint(&mut app);
+    let divider = app
+        .hits
+        .log
+        .iter()
+        .find(|(_, target)| *target == crate::app::git::log::LogTarget::Divider)
+        .unwrap()
+        .0;
+    let (x, y) = (divider.x + divider.w / 2.0, divider.y + divider.h / 2.0);
+    for offset in [-12.0, -8.0, 8.0, 12.0] {
+        assert_eq!(app.touch_drag_point(x + offset, y), Some((x, y)));
+    }
+    let before = app.log_parts().details.w;
+    touch(&mut app, 1, TouchPhase::Started, x + 8.0, y);
+    assert!(matches!(app.drag, Drag::LogDivider { .. }));
+    assert_eq!(app.log_parts().details.w, before);
+    touch(&mut app, 1, TouchPhase::Moved, x - 32.0, y);
+    paint(&mut app);
+    touch(&mut app, 1, TouchPhase::Ended, x - 32.0, y);
+    assert!((app.log_parts().details.w - before - 40.0).abs() < 1.0);
+    assert_eq!(app.drag, Drag::None);
+    assert!(app.popup().is_none());
+    assert_eq!(app.touch.keyboard_requests, 0);
+}
+
+#[test]
+fn touch_divider_hit_bands_keep_their_boundary_and_respect_overlays() {
+    let dir = sample_folder("touch-divider-hit-bands");
+    let mut app = app_with(&dir.join("short.rs"), false);
+    app.set_sidebar(true);
+    paint(&mut app);
+    let divider = app.layout.splitter;
+    let center = divider.x + divider.w / 2.0;
+    let y = divider.y + divider.h / 2.0;
+    for offset in [-12.25, -12.0, 12.0, 12.25] {
+        assert_eq!(
+            app.touch_drag_point(center + offset, y),
+            (offset.abs() <= 12.0).then_some((center, y)),
+            "offset={offset}"
+        );
+    }
+    // 顶栏中的控件不能因扩大分隔条的命中带而变成布局拖动。
+    let button = app.layout.sidebar_button;
+    assert_eq!(
+        app.touch_drag_point(button.x + button.w / 2.0, button.y + button.h / 2.0),
+        None
+    );
+    app.on_mouse_move(center + 8.0, y);
+    app.on_mouse_down(MouseButton::Right);
+    assert!(app.popup().is_some());
+    assert_eq!(app.touch_drag_point(center + 8.0, y), None);
+    app.dismiss_popup();
+    app.open_picker();
+    assert!(app.picker.open);
+    assert_eq!(app.touch_drag_point(center + 8.0, y), None);
+    app.close_picker();
+    app.open_settings();
+    app.settings.motion = None;
+    paint(&mut app);
+    assert_eq!(app.touch_drag_point(center + 8.0, y), None);
     let _ = std::fs::remove_dir_all(dir);
 }
 

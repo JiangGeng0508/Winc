@@ -524,33 +524,87 @@ fn mask_is_clipped_against_its_own_origin() {
 #[test]
 fn coverage_matches_mask_with_an_identity_gamma() {
     let identity: [u8; 256] = std::array::from_fn(|i| i as u8);
-    let (w, h) = (37, 9);
-    let data: Vec<u8> = (0..w * h).map(|i| (i * 7 % 256) as u8).collect();
-    let dst: Vec<u32> = (0..w * h)
-        .map(|i| 0xff00_0000 | (i as u32).wrapping_mul(2_654_435_761) >> 8)
-        .collect();
-    let clips = [ALL, IRect::new(3, 2, 30, 7)];
-    for color in [
-        0xffff_ffff,
-        0xff12_3456,
-        0x8040_c0ff,
-        0x01ff_0000,
-        0x00ff_ffff,
-    ] {
-        for (area, clip) in [IRect::new(0, 0, 37, 9), IRect::new(-5, -2, 32, 7)]
+    // 覆盖向量宽度两侧的长度和非整批尾部；窄字形、裁剪与透明度同样必须逐像素一致。
+    for w in [1usize, 7, 8, 9, 12, 15, 16, 17, 24, 31, 32, 33, 37] {
+        let h = 9;
+        let data: Vec<u8> = (0..w * h).map(|i| (i * 7 % 256) as u8).collect();
+        let dst: Vec<u32> = (0..w * h)
+            .map(|i| 0xff00_0000 | (i as u32).wrapping_mul(2_654_435_761) >> 8)
+            .collect();
+        let clips = [ALL, IRect::new(3, 2, 30, 7)];
+        for color in [
+            0xffff_ffff,
+            0xff12_3456,
+            0x8040_c0ff,
+            0x01ff_0000,
+            0x00ff_ffff,
+        ] {
+            for (area, clip) in [
+                IRect::new(0, 0, w as i32, h as i32),
+                IRect::new(-5, -2, w.saturating_sub(5) as i32, 7),
+            ]
             .into_iter()
             .flat_map(|area| clips.map(|clip| (area, clip)))
-        {
-            let (mut a, mut b) = (dst.clone(), dst.clone());
-            canvas(&mut a, w, h).mask(area, &data, color, &identity, clip);
-            canvas(&mut b, w, h).coverage(area, &data, color, clip);
-            assert!(a == b, "{color:08x} {area:?} {clip:?}");
+            {
+                let (mut a, mut b) = (dst.clone(), dst.clone());
+                canvas(&mut a, w, h).mask(area, &data, color, &identity, clip);
+                canvas(&mut b, w, h).coverage(area, &data, color, clip);
+                assert!(a == b, "{color:08x} {area:?} {clip:?}");
+            }
         }
     }
 }
 
 mod composite_bench {
     use super::*;
+
+    /// 比较字形混色的标量循环与运行时指令集分发；使用 release，避免溢出检查影响向量化。
+    #[test]
+    #[ignore]
+    fn measure_glyph_coverage() {
+        #[inline(never)]
+        fn scalar(canvas: &mut Canvas<'_>, area: IRect, data: &[u8], color: u32) {
+            let alpha = (color >> 24) & 0xff;
+            for y in 0..area.y1 {
+                let src = y as usize * area.width();
+                let pixels = canvas
+                    .row(y, area)
+                    .iter_mut()
+                    .zip(&data[src..src + area.width()]);
+                if alpha == 255 {
+                    for (p, &m) in pixels {
+                        *p = mix(*p, color, u32::from(m));
+                    }
+                } else {
+                    for (p, &m) in pixels {
+                        *p = mix(*p, color, div255(alpha * u32::from(m)));
+                    }
+                }
+            }
+        }
+        for width in [8, 12, 16, 24, 48] {
+            let height = 24;
+            let area = IRect::new(0, 0, width as i32, height as i32);
+            let data: Vec<u8> = (0..width * height).map(|i| (i * 7 % 256) as u8).collect();
+            let mut pixels = vec![0xff12_3456; width * height];
+            let mut c = canvas(&mut pixels, width, height);
+            for vector in [false, true] {
+                let start = std::time::Instant::now();
+                for _ in 0..100_000 {
+                    let color = std::hint::black_box(0xffab_cdef);
+                    if vector {
+                        c.coverage(area, &data, color, ALL);
+                    } else {
+                        scalar(&mut c, area, &data, color);
+                    }
+                }
+                println!(
+                    "width={width} vector={vector} elapsed={:?}",
+                    start.elapsed()
+                );
+            }
+        }
+    }
 
     /// 测量设置卡片大小（2× 屏幕，1440×1040 个物理像素）的图层合成一次的耗时。
     #[test]

@@ -1083,8 +1083,8 @@ impl Canvas<'_> {
     /// 绘制 8 位覆盖率蒙版（单色字形），按 `color` 着色后叠加；覆盖率已是最终值，不再映射。
     ///
     /// `area` 的尺寸即蒙版 `data` 的尺寸，结果与以恒等映射表调用 [`Canvas::mask`] 相同。
-    /// 循环内无分支、无查表：在覆盖率随机的 12×20 像素蒙版上实测每像素约 0.64 ns，
-    /// 逐像素查表并判断覆盖率时约 1.48 ns。字形混色是每帧绘制中开销最大的一项。
+    /// 像素循环内无分支、无查表；x86-64 支持 AVX2 时整张蒙版使用向量化的混色循环，
+    /// 指令集检测每个字形只做一次，其他平台沿用相同的标量计算。
     ///
     /// # Panics
     ///
@@ -1094,22 +1094,7 @@ impl Canvas<'_> {
         let Some(v) = self.visible(area, clip).filter(|_| alpha > 0) else {
             return;
         };
-        let (w, cols) = (area.width(), v.width());
-
-        for y in v.y0..v.y1 {
-            let src = (y - area.y0) as usize * w + (v.x0 - area.x0) as usize;
-            let pixels = self.row(y, v).iter_mut().zip(&data[src..src + cols]);
-
-            if alpha == 255 {
-                for (p, &m) in pixels {
-                    *p = mix(*p, color, u32::from(m));
-                }
-            } else {
-                for (p, &m) in pixels {
-                    *p = mix(*p, color, div255(alpha * u32::from(m)));
-                }
-            }
-        }
+        wide::coverage(self, area, data, color, v);
     }
 
     /// 绘制非预乘的 RGBA8 位图（彩色 emoji），整体乘以不透明度 `opacity`（0 至 255）。

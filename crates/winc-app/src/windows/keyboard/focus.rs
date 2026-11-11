@@ -55,6 +55,7 @@ impl TouchKeyboard {
         let mut input = TextInput {
             hwnd,
             props,
+            pane: None,
             _apartment: apartment,
             window: window.clone(),
             focused: None,
@@ -81,7 +82,7 @@ impl TouchKeyboard {
     /// 无法标注输入区或请求 `InputPane` 时返回系统错误。
     pub fn show(&mut self, window: &Arc<Window>) -> windows::core::Result<bool> {
         self.update(window, true)?;
-        if let Some(input) = &self.input {
+        if let Some(input) = &mut self.input {
             // 即使焦点仍在同一自绘输入区，也须让系统重新查询其文本角色，取消本次触摸的自动收起。
             // SAFETY: input 持有窗口，当前点按已由应用确认属于可编辑文本。
             unsafe {
@@ -92,8 +93,10 @@ impl TouchKeyboard {
                     CHILDID_SELF as i32,
                 )
             };
+            input.show_keyboard()
+        } else {
+            Ok(false)
         }
-        show_touch_keyboard(window)
     }
 
     /// 当前控件不再可编辑时撤销标注；窗口暂时失焦仍保留文本角色。
@@ -105,13 +108,33 @@ impl TouchKeyboard {
 struct TextInput {
     hwnd: HWND,
     props: IAccPropServices,
+    /// 首次请求键盘时创建；后续点按复用接口，但每次仍查询实时可见性。
+    pane: Option<IFrameworkInputPane>,
     _apartment: Apartment,
-    // 保证 ClearHwndProps 在 HWND 销毁之前调用；COM 接口先于 apartment 释放。
+    // 保证 ClearHwndProps 在 HWND 销毁之前调用；所有 COM 接口先于 apartment 释放。
     window: Arc<Window>,
     focused: Option<bool>,
 }
 
 impl TextInput {
+    fn show_keyboard(&mut self) -> windows::core::Result<bool> {
+        let pane = match &self.pane {
+            Some(pane) => pane,
+            None => {
+                // SAFETY: self 持有当前窗口线程上的 COM 初始化 guard，不聚合接口。
+                let pane =
+                    unsafe { CoCreateInstance(&FrameworkInputPane, None, CLSCTX_INPROC_SERVER) }?;
+                self.pane.insert(pane)
+            }
+        };
+        let result = show_touch_keyboard(self.hwnd, pane);
+        // 系统输入服务可能重启；出错后允许下一次点按重新创建接口。
+        if result.is_err() {
+            self.pane = None;
+        }
+        result
+    }
+
     /// 文本角色随控件保留，焦点状态随 HWND 同步；重新激活时立刻通知系统，无需等待下一次点按。
     fn sync_focus(&mut self) -> windows::core::Result<()> {
         // SAFETY: 查询当前窗口线程上的键盘焦点，窗口由 self.window 保持存活。
