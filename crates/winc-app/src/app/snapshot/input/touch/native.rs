@@ -17,8 +17,12 @@ use ::windows::Win32::UI::Shell::{FrameworkInputPane, IFrameworkInputPane};
 use ::windows::core::Interface;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::POINT;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows_sys::Win32::UI::Input::Pointer::{InitializeTouchInjection, TOUCH_FEEDBACK_NONE};
 use windows_sys::Win32::UI::WindowsAndMessaging::OBJID_CLIENT;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, SetForegroundWindow, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -41,7 +45,7 @@ fn hwnd(window: &Window) -> HWND {
     HWND(handle.hwnd.get() as _)
 }
 
-fn native_role(window: &Window) -> i32 {
+fn native_accessible(window: &Window) -> IAccessible {
     // SAFETY: HWND 存活，输出类型按请求的 IID 转换；COM 已初始化。
     unsafe {
         let mut object = std::ptr::null_mut();
@@ -52,8 +56,66 @@ fn native_role(window: &Window) -> i32 {
             &mut object,
         )
         .unwrap();
-        let object = IAccessible::from_raw(object);
-        i32::try_from(&object.get_accRole(&0i32.into()).unwrap()).unwrap()
+        IAccessible::from_raw(object)
+    }
+}
+
+fn native_role(window: &Window) -> i32 {
+    // SAFETY: 查询当前线程中有效的窗口可访问性接口。
+    unsafe { i32::try_from(&native_accessible(window).get_accRole(&0i32.into()).unwrap()).unwrap() }
+}
+
+fn native_focused(window: &Window) -> bool {
+    // SAFETY: 查询当前线程中有效的窗口可访问性接口。
+    let state = unsafe {
+        i32::try_from(
+            &native_accessible(window)
+                .get_accState(&0i32.into())
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    state & windows_sys::Win32::UI::WindowsAndMessaging::STATE_SYSTEM_FOCUSED as i32 != 0
+}
+
+/// 普通 Win32 输入窗口，模拟切到别的应用后再触摸返回 Winc。
+struct NativeEdit(windows_sys::Win32::Foundation::HWND);
+impl NativeEdit {
+    fn new() -> Self {
+        // SAFETY: 标准 EDIT 窗口类；所有字符串以零结尾，窗口归当前事件线程所有。
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                windows_sys::w!("EDIT"),
+                windows_sys::w!("Native input focus test"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                400,
+                400,
+                400,
+                200,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        Self(hwnd)
+    }
+    fn focus(&self) {
+        // SAFETY: 窗口由当前线程创建且仍然存活。
+        unsafe {
+            SetForegroundWindow(self.0);
+            SetFocus(self.0);
+        }
+    }
+}
+impl Drop for NativeEdit {
+    fn drop(&mut self) {
+        // SAFETY: 当前线程持有该测试窗口的唯一所有权。
+        unsafe {
+            DestroyWindow(self.0);
+        }
     }
 }
 
@@ -79,6 +141,8 @@ fn native_touch_keyboard_in_rendered_app() {
         shown: bool,
         hidden: bool,
         taps: usize,
+        other: Option<NativeEdit>,
+        returning: bool,
     }
     impl TestApp {
         fn visible(&self) -> bool {
@@ -90,6 +154,7 @@ fn native_touch_keyboard_in_rendered_app() {
     impl ApplicationHandler<Result<(), String>> for TestApp {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
             self.app.resumed(event_loop);
+            self.other = Some(NativeEdit::new());
             let window = self.app.window.handle.as_ref().unwrap();
             window.set_outer_position(PhysicalPosition::new(100, 100));
             window.focus_window();
@@ -115,6 +180,12 @@ fn native_touch_keyboard_in_rendered_app() {
             });
         }
         fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+            if matches!(event, WindowEvent::Focused(true)) && self.returning {
+                self.returning = false;
+                self.shown = self.visible();
+                self.hidden = false;
+                eprintln!("reactivated phase {} visible={}", self.phase, self.shown);
+            }
             if let WindowEvent::Touch(touch) = &event {
                 eprintln!(
                     "phase={} {:?} touch {:?}, visible={}",
@@ -139,7 +210,7 @@ fn native_touch_keyboard_in_rendered_app() {
                     self.ready_at = Instant::now() + Duration::from_millis(500);
                     self.app.window.handle.as_ref().unwrap().focus_window();
                 }
-            } else {
+            } else if !self.returning {
                 self.hidden |= self.shown && !visible;
                 self.shown |= visible;
             }
@@ -147,26 +218,28 @@ fn native_touch_keyboard_in_rendered_app() {
                 && !self.waiting_for_hide
                 && Instant::now() >= self.ready_at
                 && !self.app.dirty
-                && self.app.window.focused
+                && (self.app.window.focused || self.returning)
             {
                 let window = self.app.window.handle.as_ref().unwrap();
-                assert_eq!(
-                    native_role(window),
-                    ROLE_SYSTEM_TEXT as i32,
-                    "phase {} focus {:?}",
-                    self.phase,
-                    self.app.focus
-                );
+                if !self.returning {
+                    assert_eq!(
+                        native_role(window),
+                        ROLE_SYSTEM_TEXT as i32,
+                        "phase {} focus {:?}",
+                        self.phase,
+                        self.app.focus
+                    );
+                }
                 let (x, y) = match self.phase {
-                    0 => (
+                    0 | 1 => (
                         self.app.layout.text.x + 100.0,
                         self.app.layout.text.y + 40.0,
                     ),
-                    1 | 3 => {
+                    2 | 4 => {
                         let a = self.app.find.input.view.area;
                         (a.x + 8.0, a.y + a.h / 2.0)
                     }
-                    2 => {
+                    3 => {
                         let a = self.app.find.replace_input.view.area;
                         (a.x + 8.0, a.y + a.h / 2.0)
                     }
@@ -185,7 +258,7 @@ fn native_touch_keyboard_in_rendered_app() {
                 self.pending = false;
             }
             assert!(
-                self.start.elapsed() < Duration::from_secs(25),
+                self.start.elapsed() < Duration::from_secs(40),
                 "native touch test timed out"
             );
             event_loop.set_control_flow(ControlFlow::WaitUntil(
@@ -207,16 +280,16 @@ fn native_touch_keyboard_in_rendered_app() {
             assert_eq!(
                 self.app.focus,
                 match self.phase {
-                    0 => Focus::Editor,
-                    2 => Focus::Replace,
+                    0 | 1 => Focus::Editor,
+                    3 => Focus::Replace,
                     _ => Focus::Search,
                 }
             );
             self.phase += 1;
             match self.phase {
-                1 => self.app.open_search(true),
-                2 => {}
-                3 => {
+                1 | 3 => {}
+                2 => self.app.open_search(true),
+                4 => {
                     // 模拟用户主动关闭键盘，确认之后仍可由点按重新打开。
                     let window = self.app.window.handle.as_ref().unwrap();
                     let interop =
@@ -226,7 +299,7 @@ fn native_touch_keyboard_in_rendered_app() {
                     assert!(pane.TryHide().unwrap());
                     self.waiting_for_hide = true;
                 }
-                4 => {
+                5 => {
                     event_loop.exit();
                     return;
                 }
@@ -234,6 +307,13 @@ fn native_touch_keyboard_in_rendered_app() {
             }
             self.pending = true;
             self.ready_at = Instant::now() + Duration::from_millis(500);
+            if (1..=3).contains(&self.phase) {
+                // 键盘在原生输入窗口中可见时，直接触摸 Winc 的输入框来重新激活。
+                self.other.as_ref().unwrap().focus();
+                self.returning = true;
+                self.shown = false;
+                self.hidden = false;
+            }
         }
     }
     let event_loop = EventLoop::<Result<(), String>>::with_user_event()
@@ -262,11 +342,13 @@ fn native_touch_keyboard_in_rendered_app() {
         shown: false,
         hidden: false,
         taps: 0,
+        other: None,
+        returning: false,
     };
     event_loop.run_app(&mut test).unwrap();
-    assert_eq!(test.taps, 16);
-    assert_eq!(test.app.touch.keyboard_requests, 16);
-    // 只读焦点与窗口失焦都须撤销标注；恢复输入后可重新注册。
+    assert_eq!(test.taps, 20);
+    assert_eq!(test.app.touch.keyboard_requests, 20);
+    // 只读时撤销文本角色；切到其他窗口只撤销 focused 状态，保留输入对象的角色。
     test.app.focus = Focus::Editor;
     test.app.editor.active_mut().unwrap().readonly = true;
     test.app.update_ime_area();
@@ -276,10 +358,12 @@ fn native_touch_keyboard_in_rendered_app() {
     test.app.update_ime_area();
     let window = test.app.window.handle.as_ref().unwrap();
     assert_eq!(native_role(window), ROLE_SYSTEM_TEXT as i32);
+    test.other.as_ref().unwrap().focus();
     test.app.window.focused = false;
     test.app.update_ime_area();
-    assert_ne!(
+    assert_eq!(
         native_role(test.app.window.handle.as_ref().unwrap()),
         ROLE_SYSTEM_TEXT as i32
     );
+    assert!(!native_focused(test.app.window.handle.as_ref().unwrap()));
 }

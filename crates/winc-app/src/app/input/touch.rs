@@ -76,6 +76,8 @@ pub(in crate::app) struct TouchState {
     gesture: Option<Gesture>,
     /// 长按开始时的文字目标；抬手越过区域边界时菜单仍作用于原选区。
     selection: Option<MenuTarget>,
+    /// 落指吸附到分隔条时的偏移；整次拖动沿用，布局不会在第一帧跳动。
+    drag_offset: Point,
     /// 最近一次收到触摸事件的时刻。
     pub(in crate::app) last_event: Option<Instant>,
     /// 是否正在把一次点按作为鼠标点击发出；为真时连击判定按 [`TAP_SLOP`] 放宽位置偏差。
@@ -229,11 +231,12 @@ impl App {
     /// 处理一个触摸事件：坐标换算为逻辑像素后识别手势，转换为鼠标点击、滚动或拖动。
     pub(in crate::app) fn on_touch(&mut self, touch: Touch) {
         let scale = self.renderer.as_ref().map_or(1.0, Renderer::scale_factor);
-        let point = (
+        let mut point = (
             touch.location.x as f32 / scale,
             touch.location.y as f32 / scale,
         );
         if touch.phase == TouchPhase::Started && !self.touch.active() {
+            self.touch.drag_offset = (0.0, 0.0);
             self.drop_drags();
             self.scroll_glide = None;
             self.wheel.glide = None;
@@ -257,9 +260,26 @@ impl App {
         {
             self.last_click = None;
         }
-        let direct = touch.phase == TouchPhase::Started
-            && !self.touch.active()
-            && self.touch_drag_at(point.0, point.1);
+        let direct = if touch.phase == TouchPhase::Started && !self.touch.active() {
+            if let Some(at) = self.touch_drag_point(point.0, point.1) {
+                self.touch.drag_offset = (at.0 - point.0, at.1 - point.1);
+                point = at;
+                true
+            } else {
+                false
+            }
+        } else {
+            if self
+                .touch
+                .gesture
+                .as_ref()
+                .is_some_and(|g| g.mode == Mode::Drag)
+            {
+                point.0 += self.touch.drag_offset.0;
+                point.1 += self.touch.drag_offset.1;
+            }
+            false
+        };
         let action = self.touch.update(&touch, point, Instant::now(), direct);
         if let Some(action) = action {
             self.apply_touch(action);

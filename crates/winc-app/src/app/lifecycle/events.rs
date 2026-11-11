@@ -316,11 +316,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(focused) => {
                 self.window.focused = focused;
+                // 在系统处理激活触摸之前恢复文本焦点，不等待下一帧重绘；失焦仅更新状态，保留角色。
+                #[cfg(windows)]
+                self.update_ime_area();
                 self.update_foreground(focused);
                 // 离开窗口时停止录制按键，菜单项的快捷键随之恢复，不影响别的窗口和应用。
                 if !focused {
-                    #[cfg(windows)]
-                    self.ime.touch_keyboard.clear();
                     self.cancel_touch();
                     self.set_recording(false);
                 }

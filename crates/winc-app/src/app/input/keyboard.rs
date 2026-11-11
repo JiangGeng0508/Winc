@@ -983,10 +983,7 @@ impl App {
                                 .is_some_and(|v| v.editing && v.new.path.is_some())
                     }));
             let editable = editable && self.alert.is_none() && self.popup().is_none();
-            let _ = self
-                .ime
-                .touch_keyboard
-                .update(window, self.window.focused && editable);
+            let _ = self.ime.touch_keyboard.update(window, editable);
         }
         if let (Some(area), Some(window)) = (self.ime.cursor, &self.window.handle)
             && self.ime.last_area != Some(area)

@@ -55,6 +55,7 @@ Touchscreens support tapping buttons and placing the caret, double-tapping to se
 swiping to scroll, and dragging scrollbars and panel dividers. Hold text for 500 ms, drag to select,
 then release to open the context menu and copy. This works in the editor, input fields, diffs,
 Markdown previews, and terminal. Holding other areas opens their context menu after 500 ms.
+Panel dividers have a wider touch target and start dragging immediately, without a long press.
 Swipes stay in the region where they started and stop on release. Additional fingers cancel
 the current gesture; lift all fingers before starting another. On Windows, drag the title bar to
 move the window, double-tap it to maximize or restore, and drag the window edges to resize.
@@ -65,6 +66,8 @@ Swipes, long presses, read-only areas, and regular mouse clicks do not request i
 polling is needed.
 Native accessibility text-role annotations and focus notifications keep the keyboard open on
 repeated taps. Tapping an input area after closing the keyboard requests it again.
+Text roles remain registered while Winc is inactive; returning from another app updates focus
+immediately, keeping an already visible keyboard open.
 
 ## Platforms
 

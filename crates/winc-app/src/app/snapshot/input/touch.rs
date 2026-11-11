@@ -321,7 +321,7 @@ fn touch_scroll_stays_in_the_panel_where_it_started() {
     // 大于横向位移，按竖直方向滚动。
     let x = tree.right() - 40.0;
     let y = tree.y + tree.h / 2.0;
-    assert!(!app.touch_drag_at(x, y));
+    assert!(app.touch_drag_point(x, y).is_none());
     let editor_x = app.layout.editor.x + 10.0;
     assert!(editor_x - x < 100.0);
     touch(&mut app, 1, TouchPhase::Started, x, y);
@@ -354,6 +354,80 @@ fn hold(app: &mut App, x: f32, y: f32) {
     touch(app, 1, TouchPhase::Started, x, y);
     let due = app.touch_tick(Instant::now()).unwrap();
     assert_eq!(app.touch_tick(due), None);
+}
+
+#[test]
+fn touch_layout_dividers_accept_finger_offsets_and_keep_dragging() {
+    let dir = sample_folder("touch-layout-dividers");
+    let path = dir.join("layout.md");
+    std::fs::write(&path, "# Layout\n\nhello world\n").unwrap();
+    for kind in 0..4 {
+        for offset in [0.0, -8.0, 8.0] {
+            let mut app = app_with(&path, false);
+            if kind == 3 {
+                app.set_preview_mode(winc_editor::PreviewMode::Split);
+            } else if kind != 0 {
+                app.config.terminal_enabled = Some(true);
+                app.terminal.open = true;
+                app.terminal.height = crate::app::terminal::DEFAULT_HEIGHT;
+                app.config.terminal_right = Some(kind == 2);
+                app.relayout();
+            }
+            paint(&mut app);
+            let (area, before) = match kind {
+                0 => (app.layout.splitter, app.sidebar.width),
+                1 => (app.layout.terminal_divider, app.layout.terminal.h),
+                2 => (app.layout.terminal_divider, app.layout.terminal.w),
+                _ => (app.layout.split_divider, app.layout.editor.w),
+            };
+            assert!(area.w > 0.0 && area.h > 0.0);
+            let (x, y) = (
+                area.x + area.w / 2.0 + if kind == 1 { 0.0 } else { offset },
+                area.y + area.h / 2.0 + if kind == 1 { offset } else { 0.0 },
+            );
+            touch(&mut app, 1, TouchPhase::Started, x, y);
+            assert!(
+                matches!(
+                    app.drag,
+                    Drag::Splitter { .. }
+                        | Drag::TerminalDivider { .. }
+                        | Drag::SplitDivider { .. }
+                ),
+                "kind={kind}, offset={offset}, drag={:?}",
+                app.drag
+            );
+            let (dx, dy) = match kind {
+                1 => (0.0, -40.0),
+                2 => (-40.0, 0.0),
+                _ => (40.0, 0.0),
+            };
+            for step in 1..=4 {
+                touch(
+                    &mut app,
+                    1,
+                    TouchPhase::Moved,
+                    x + dx * step as f32 / 4.0,
+                    y + dy * step as f32 / 4.0,
+                );
+                paint(&mut app);
+            }
+            touch(&mut app, 1, TouchPhase::Ended, x + dx, y + dy);
+            let after = match kind {
+                0 => app.sidebar.width,
+                1 => app.layout.terminal.h,
+                2 => app.layout.terminal.w,
+                _ => app.layout.editor.w,
+            };
+            assert!(
+                (after - before - 40.0).abs() <= 1.0,
+                "kind={kind}, offset={offset}, before={before}, after={after}"
+            );
+            assert_eq!(app.drag, Drag::None);
+            assert!(app.popup().is_none());
+            assert_eq!(app.touch.keyboard_requests, 0);
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

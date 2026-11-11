@@ -34,12 +34,10 @@ impl TouchKeyboard {
             self.clear();
             return Ok(());
         }
-        if self
-            .input
-            .as_ref()
-            .is_some_and(|input| Arc::ptr_eq(&input.window, window))
+        if let Some(input) = self.input.as_mut()
+            && Arc::ptr_eq(&input.window, window)
         {
-            return Ok(());
+            return input.sync_focus();
         }
         self.clear();
         let handle = window
@@ -49,21 +47,17 @@ impl TouchKeyboard {
             return Err(windows::core::Error::from_hresult(E_HANDLE));
         };
         let hwnd = HWND(handle.hwnd.get() as _);
-        // 首帧可能绘制于窗口激活之前；之后的重绘会再次同步。
-        // SAFETY: 只查询当前窗口线程的键盘焦点。
-        if unsafe { GetFocus() } != hwnd.0 {
-            return Ok(());
-        }
         // SAFETY: 初始化成功后交给 TextInput，在同一窗口线程上最后释放。
         unsafe { RoInitialize(RO_INIT_SINGLETHREADED) }?;
         let apartment = Apartment;
         // SAFETY: 已初始化 COM，不聚合；接口保留于当前窗口线程。
         let props = unsafe { CoCreateInstance(&CAccPropServices, None, CLSCTX_INPROC_SERVER) }?;
-        let input = TextInput {
+        let mut input = TextInput {
             hwnd,
             props,
             _apartment: apartment,
             window: window.clone(),
+            focused: None,
         };
         // SAFETY: HWND 存活；只标注当前自绘输入焦点对应的客户区对象，不更改窗口对象及其他应用。
         unsafe {
@@ -74,14 +68,8 @@ impl TouchKeyboard {
                 PROPID_ACC_ROLE,
                 &(ROLE_SYSTEM_TEXT as i32).into(),
             )?;
-            input.props.SetHwndProp(
-                hwnd,
-                OBJID_CLIENT as u32,
-                CHILDID_SELF,
-                PROPID_ACC_STATE,
-                &((STATE_SYSTEM_FOCUSABLE | STATE_SYSTEM_FOCUSED) as i32).into(),
-            )?;
         }
+        input.sync_focus()?;
         self.input = Some(input);
         Ok(())
     }
@@ -108,7 +96,7 @@ impl TouchKeyboard {
         show_touch_keyboard(window)
     }
 
-    /// 失去可编辑文本焦点时撤销本窗口的标注。
+    /// 当前控件不再可编辑时撤销标注；窗口暂时失焦仍保留文本角色。
     pub fn clear(&mut self) {
         self.input = None;
     }
@@ -120,6 +108,41 @@ struct TextInput {
     _apartment: Apartment,
     // 保证 ClearHwndProps 在 HWND 销毁之前调用；COM 接口先于 apartment 释放。
     window: Arc<Window>,
+    focused: Option<bool>,
+}
+
+impl TextInput {
+    /// 文本角色随控件保留，焦点状态随 HWND 同步；重新激活时立刻通知系统，无需等待下一次点按。
+    fn sync_focus(&mut self) -> windows::core::Result<()> {
+        // SAFETY: 查询当前窗口线程上的键盘焦点，窗口由 self.window 保持存活。
+        let focused = unsafe { GetFocus() } == self.hwnd.0;
+        if self.focused == Some(focused) {
+            return Ok(());
+        }
+        let state = STATE_SYSTEM_FOCUSABLE | if focused { STATE_SYSTEM_FOCUSED } else { 0 };
+        // SAFETY: COM 与 HWND 均在当前线程存活；只更新此输入对象的焦点状态。
+        unsafe {
+            self.props.SetHwndProp(
+                self.hwnd,
+                OBJID_CLIENT as u32,
+                CHILDID_SELF,
+                PROPID_ACC_STATE,
+                &(state as i32).into(),
+            )?;
+            NotifyWinEvent(
+                if focused {
+                    EVENT_OBJECT_FOCUS
+                } else {
+                    EVENT_OBJECT_STATECHANGE
+                },
+                self.hwnd,
+                OBJID_CLIENT,
+                CHILDID_SELF as i32,
+            );
+        }
+        self.focused = Some(focused);
+        Ok(())
+    }
 }
 
 impl Drop for TextInput {

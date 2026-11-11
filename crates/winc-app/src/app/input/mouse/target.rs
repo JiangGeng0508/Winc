@@ -238,16 +238,16 @@ impl App {
         }
     }
 
-    /// 是否在 (`x`, `y`) 落指后立即开始拖动，适用于滚动条、缩略图和分隔条。
-    ///
-    /// 列表、按钮和文字需要先区分点按与滑动，不在落指时开始拖动。
-    pub(in crate::app) fn touch_drag_at(&self, x: f32, y: f32) -> bool {
+    /// 分隔条为触摸保留 24 逻辑像素的命中带，返回带内对应的真实分隔条坐标。
+    /// 浮层和按钮保持原有优先级，鼠标仍按原来的精确范围命中。
+    pub(in crate::app) fn touch_drag_point(&self, x: f32, y: f32) -> Option<(f32, f32)> {
         if self.touch_intercepted() {
-            return false;
+            return None;
         }
         if self.settings.open {
-            return self.settings_part_at(x, y).is_none()
-                && self.settings_scrollbar_at(x, y).is_some();
+            return (self.settings_part_at(x, y).is_none()
+                && self.settings_scrollbar_at(x, y).is_some())
+            .then_some((x, y));
         }
         if self
             .markdown
@@ -255,10 +255,11 @@ impl App {
             .as_ref()
             .is_some_and(|v| v.area.contains(x, y))
         {
-            return false;
+            return None;
         }
-        matches!(
-            self.target_at(x, y),
+        let target = self.target_at(x, y);
+        if matches!(
+            target,
             Target::Scrollbar(..)
                 | Target::Minimap
                 | Target::Splitter
@@ -266,7 +267,81 @@ impl App {
                 | Target::OutlineDivider
                 | Target::SplitDivider
                 | Target::Log(crate::app::git::log::LogTarget::Divider)
-        )
+        ) {
+            return Some((x, y));
+        }
+        // 不扩大到顶栏和输入框、按钮上；顶栏仍交给系统的精确命中测试。
+        if y < TOP_BAR_END
+            || self.field_at(x, y).is_some()
+            || !matches!(
+                target,
+                Target::None
+                    | Target::Editor
+                    | Target::Gutter
+                    | Target::Terminal
+                    | Target::MarkdownText
+                    | Target::Tree(_)
+                    | Target::Panel(Hover::None | Hover::Result(_))
+                    | Target::LogText
+                    | Target::Log(
+                        crate::app::git::log::LogTarget::Row(_)
+                            | crate::app::git::log::LogTarget::Avatar(_)
+                            | crate::app::git::log::LogTarget::Line(..)
+                    )
+            )
+        {
+            return None;
+        }
+        let log = if self.log_active() {
+            let details = self.log_parts().details;
+            winc_render::Rect::new(details.x - 3.0, details.y, 6.0, details.h)
+        } else {
+            winc_render::Rect::default()
+        };
+        let mut closest = None;
+        let mut distance = f32::MAX;
+        for (rect, vertical) in [
+            (self.layout.splitter, true),
+            (self.layout.terminal_divider, self.terminal_right()),
+            (self.layout.split_divider, true),
+            (self.outline_divider(), false),
+            (log, true),
+        ] {
+            if rect.w <= 0.0 || rect.h <= 0.0 {
+                continue;
+            }
+            let (at, gap, along) = if vertical {
+                let center = rect.x + rect.w / 2.0;
+                (
+                    (center, y),
+                    (x - center).abs(),
+                    y >= rect.y && y < rect.bottom(),
+                )
+            } else {
+                let center = rect.y + rect.h / 2.0;
+                (
+                    (x, center),
+                    (y - center).abs(),
+                    x >= rect.x && x < rect.right(),
+                )
+            };
+            if along
+                && gap <= 12.0
+                && gap < distance
+                && matches!(
+                    self.target_at(at.0, at.1),
+                    Target::Splitter
+                        | Target::TerminalDivider
+                        | Target::SplitDivider
+                        | Target::OutlineDivider
+                        | Target::Log(crate::app::git::log::LogTarget::Divider)
+                )
+            {
+                closest = Some(at);
+                distance = gap;
+            }
+        }
+        closest
     }
 
     /// 返回窗口坐标 (`x`, `y`)（逻辑像素）处的悬停目标。
