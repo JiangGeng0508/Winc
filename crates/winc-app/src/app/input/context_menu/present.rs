@@ -318,6 +318,22 @@ impl App {
     /// 目标文档已不存在时不弹出。
     pub(in crate::app) fn open_context_menu(&mut self, target: MenuTarget, at: (f32, f32)) {
         let entries = match &target {
+            &MenuTarget::Field(focus) => {
+                if self.focus != focus {
+                    return;
+                }
+                let Some(field) = self.focused_field() else {
+                    return;
+                };
+                let selected = !field.selected_text().is_empty() && !field.is_masked();
+                vec![
+                    MenuEntry::Item(MenuCommand::Cut, selected),
+                    MenuEntry::Item(MenuCommand::Copy, selected),
+                    MenuEntry::Item(MenuCommand::Paste, true),
+                    MenuEntry::Separator,
+                    MenuEntry::Item(MenuCommand::SelectAll, true),
+                ]
+            }
             &MenuTarget::AddLanguage(task) => {
                 let listed = match task {
                     Task::Format => &self.settings.languages.format,

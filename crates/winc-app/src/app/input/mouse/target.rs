@@ -6,7 +6,6 @@ impl App {
     /// 点按位置对应的可输入焦点；沿用点击命中与字段布局，不把可选中的只读文字当作输入框。
     ///
     /// 点按前后各检查一次：关闭浮层的点击不能穿透到下方的输入区。
-    #[cfg(any(windows, test))]
     pub(in crate::app) fn touch_keyboard_at(&self, x: f32, y: f32) -> Option<Focus> {
         if self.alert.is_some() || self.popup().is_some() {
             return None;
@@ -77,6 +76,47 @@ impl App {
                     && self.terminal.tab().is_some_and(|t| t.ended.is_none()) =>
             {
                 Some(Focus::Terminal)
+            }
+            _ => None,
+        }
+    }
+
+    /// 长按可拖选的文字区域；输入框复用键盘命中，文档和终端允许只读内容复制。
+    pub(in crate::app) fn touch_selection_at(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<crate::app::input::context_menu::MenuTarget> {
+        use crate::app::input::context_menu::MenuTarget;
+        if let Some(focus) = self.touch_keyboard_at(x, y).filter(|f| f.is_field()) {
+            return Some(MenuTarget::Field(focus));
+        }
+        if self.touch_intercepted()
+            || self.settings.open
+            || self
+                .markdown
+                .diagram
+                .as_ref()
+                .is_some_and(|v| v.area.contains(x, y))
+        {
+            return None;
+        }
+        match self.target_at(x, y) {
+            Target::Editor if self.over_diff_text(x, y) => Some(MenuTarget::Diff(
+                self.editor.active()?.id,
+                self.over_diff_editable(x, y),
+            )),
+            Target::Editor if self.active_shows_text() && self.layout.text.contains(x, y) => {
+                Some(MenuTarget::Editor(self.editor.active()?.id))
+            }
+            Target::MarkdownText => Some(MenuTarget::Markdown),
+            Target::MarkdownLink(link) if !self.markdown_link_is_control(link) => {
+                Some(MenuTarget::Markdown)
+            }
+            Target::Terminal
+                if self.terminal_view().contains(x, y) && self.terminal.tab().is_some() =>
+            {
+                Some(MenuTarget::Terminal(self.terminal_block_under(x, y)))
             }
             _ => None,
         }

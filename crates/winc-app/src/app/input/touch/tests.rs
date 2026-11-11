@@ -83,7 +83,11 @@ fn a_long_press_fires_once_without_a_move_and_never_clicks_on_release() {
     );
     assert_eq!(
         state.hold(now + LONG_PRESS),
-        Some(Action::Context((20.0, 30.0)))
+        Some(Action::Hold {
+            origin: (20.0, 30.0),
+            at: (20.0, 30.0),
+            ended: false
+        })
     );
     assert_eq!(state.hold(now + LONG_PRESS), None);
     assert_eq!(
@@ -109,7 +113,11 @@ fn release_after_the_deadline_does_not_depend_on_timer_order() {
             now + LONG_PRESS,
             false
         ),
-        Some(Action::Context((20.0, 30.0)))
+        Some(Action::Hold {
+            origin: (20.0, 30.0),
+            at: (20.0, 30.0),
+            ended: true
+        })
     );
 }
 
@@ -200,6 +208,82 @@ fn duplicate_starts_do_not_reset_a_gesture() {
     );
     assert_eq!(
         state.hold(now + LONG_PRESS),
-        Some(Action::Context((20.0, 30.0)))
+        Some(Action::Hold {
+            origin: (20.0, 30.0),
+            at: (20.0, 30.0),
+            ended: false
+        })
     );
+}
+
+#[test]
+fn movement_after_a_delayed_long_press_timer_does_not_start_scrolling() {
+    let mut state = TouchState::default();
+    let now = Instant::now();
+    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, false);
+    assert_eq!(
+        state.update(
+            &event(1, TouchPhase::Moved),
+            (80.0, 60.0),
+            now + LONG_PRESS,
+            false
+        ),
+        Some(Action::Hold {
+            origin: (20.0, 30.0),
+            at: (80.0, 60.0),
+            ended: false
+        })
+    );
+    assert_eq!(state.deadline(), None);
+    // 应用确认长按位置为文字后，后续移动扩展选区，直到抬手才允许弹出菜单。
+    state.gesture.as_mut().unwrap().mode = Mode::Select;
+    assert_eq!(
+        state.update(
+            &event(1, TouchPhase::Moved),
+            (90.0, 60.0),
+            now + LONG_PRESS,
+            false
+        ),
+        Some(Action::Move((90.0, 60.0)))
+    );
+    assert_eq!(
+        state.update(
+            &event(1, TouchPhase::Ended),
+            (100.0, 60.0),
+            now + LONG_PRESS,
+            false
+        ),
+        Some(Action::SelectionRelease((100.0, 60.0)))
+    );
+    assert!(!state.active());
+}
+
+#[test]
+fn another_finger_cancels_selection_without_opening_a_menu() {
+    let mut state = TouchState::default();
+    let now = Instant::now();
+    state.update(&event(1, TouchPhase::Started), (20.0, 30.0), now, false);
+    state.hold(now + LONG_PRESS);
+    state.gesture.as_mut().unwrap().mode = Mode::Select;
+    assert_eq!(
+        state.update(
+            &event(2, TouchPhase::Started),
+            (80.0, 60.0),
+            now + LONG_PRESS,
+            false
+        ),
+        Some(Action::CancelDrag)
+    );
+    for id in [1, 2] {
+        assert_eq!(
+            state.update(
+                &event(id, TouchPhase::Ended),
+                (100.0, 60.0),
+                now + LONG_PRESS,
+                false
+            ),
+            None
+        );
+    }
+    assert!(!state.active());
 }

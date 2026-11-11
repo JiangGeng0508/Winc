@@ -52,8 +52,10 @@ Measured on macOS; results vary with hardware and system load.
 | Updates | Signed in-app updates on all three platforms |
 
 Touchscreens support tapping buttons and placing the caret, double-tapping to select a word,
-swiping to scroll, and dragging scrollbars and panel dividers. Hold for 500 ms to open the context
-menu. Swipes stay in the region where they started and stop on release. Additional fingers cancel
+swiping to scroll, and dragging scrollbars and panel dividers. Hold text for 500 ms, drag to select,
+then release to open the context menu and copy. This works in the editor, input fields, diffs,
+Markdown previews, and terminal. Holding other areas opens their context menu after 500 ms.
+Swipes stay in the region where they started and stop on release. Additional fingers cancel
 the current gesture; lift all fingers before starting another. On Windows, drag the title bar to
 move the window, double-tap it to maximize or restore, and drag the window edges to resize.
 Window dragging and edge snapping use the same native Windows behavior as mouse input.

@@ -9,7 +9,7 @@ pub use keyboard::TouchKeyboard;
 pub use touch::{WindowHitTest, WindowInput};
 
 #[cfg(test)]
-pub(crate) use touch::native_tests::inject_contact;
+pub(crate) use touch::native_tests::{inject_contact, inject_hold_drag};
 
 use std::io;
 use std::os::windows::ffi::OsStrExt;

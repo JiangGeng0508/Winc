@@ -3,6 +3,7 @@
 //! 离屏渲染的缩放比例为 `SCALE`（两倍），触摸坐标按物理像素传入。
 
 use super::*;
+use crate::app::input::context_menu::{MenuEntry, PopupRow};
 use winit::event::{DeviceId, Touch, TouchPhase};
 
 #[cfg(windows)]
@@ -333,7 +334,7 @@ fn touch_scroll_stays_in_the_panel_where_it_started() {
 }
 
 #[test]
-fn touch_long_press_opens_a_menu_once_and_release_keeps_it_open() {
+fn touch_long_press_on_text_defers_the_menu_until_release() {
     let mut app = document();
     let x = app.layout.text.x + 100.0;
     let y = app.layout.text.y + 100.0;
@@ -341,11 +342,269 @@ fn touch_long_press_opens_a_menu_once_and_release_keeps_it_open() {
     let due = app.touch_tick(Instant::now()).unwrap();
     assert!(app.popup().is_none());
     assert_eq!(app.touch_tick(due), None);
-    assert!(app.popup().is_some());
+    assert!(app.popup().is_none());
+    assert!(matches!(app.drag, Drag::Select { .. }));
     touch(&mut app, 1, TouchPhase::Ended, x, y);
     assert!(app.popup().is_some());
     assert_eq!(app.drag, Drag::None);
     assert_eq!(app.touch.keyboard_requests, 0);
+}
+
+fn hold(app: &mut App, x: f32, y: f32) {
+    touch(app, 1, TouchPhase::Started, x, y);
+    let due = app.touch_tick(Instant::now()).unwrap();
+    assert_eq!(app.touch_tick(due), None);
+}
+
+#[test]
+fn touch_long_press_drags_and_copies_multiline_text_in_both_directions() {
+    for (readonly, reverse) in [(false, false), (false, true), (true, false)] {
+        let mut app = document();
+        app.editor.active_mut().unwrap().readonly = readonly;
+        let at = |app: &App, col: f32, row: f32| {
+            (
+                app.layout.text.x + TEXT_PAD + app.cell * col,
+                app.layout.text.y + app.fonts.line_height * (row + 0.5),
+            )
+        };
+        let a = at(&app, 3.0, 0.0);
+        let b = at(&app, 5.0, 1.0);
+        let (start, end) = if reverse { (b, a) } else { (a, b) };
+        hold(&mut app, start.0, start.1);
+        assert!(app.popup().is_none());
+        touch(&mut app, 1, TouchPhase::Moved, end.0, end.1);
+        assert!(app.popup().is_none());
+        let selection = app.editor.active().unwrap().selection;
+        assert_eq!(selection.range(), 3..17);
+        assert_eq!(app.editor.active().unwrap().scroll_line, 0.0);
+        touch(&mut app, 1, TouchPhase::Ended, end.0, end.1);
+        assert_eq!(app.editor.active().unwrap().selection, selection);
+        assert!(menu_commands(&app).contains(&(MenuCommand::Copy, true)));
+        assert_eq!(app.drag, Drag::None);
+        assert_eq!(app.touch.keyboard_requests, 0);
+        app.run_menu_command(MenuCommand::Copy);
+        assert_eq!(app.clipboard_text().as_deref(), Some("lo world\nhello"));
+    }
+}
+
+#[test]
+fn touch_selection_is_cancelled_without_a_menu_or_stuck_drag() {
+    for cancel in 0..3 {
+        let mut app = document();
+        let x = app.layout.text.x + TEXT_PAD + app.cell;
+        let y = app.layout.text.y + app.fonts.line_height / 2.0;
+        hold(&mut app, x, y);
+        let end_x = x + app.cell * 3.0;
+        touch(&mut app, 1, TouchPhase::Moved, end_x, y);
+        match cancel {
+            0 => touch(&mut app, 1, TouchPhase::Cancelled, x, y),
+            1 => app.cancel_touch(),
+            _ => touch(&mut app, 2, TouchPhase::Started, x, y),
+        }
+        let selection = app.editor.active().unwrap().selection;
+        touch(&mut app, 1, TouchPhase::Ended, x, y);
+        touch(&mut app, 2, TouchPhase::Ended, x, y);
+        app.on_mouse_move(x + 100.0, y + 100.0);
+        assert_eq!(app.editor.active().unwrap().selection, selection);
+        assert_eq!(app.drag, Drag::None);
+        assert!(app.popup().is_none());
+        assert!(!app.touch.active());
+    }
+}
+
+#[test]
+fn touch_selection_menu_stays_with_the_field_when_released_outside_it() {
+    let mut app = document();
+    app.open_search(true);
+    app.find.input.insert("hello world");
+    paint(&mut app);
+    let area = app.find.input.view.area;
+    hold(&mut app, area.x, area.y + area.h / 2.0);
+    assert_eq!(app.drag, Drag::Field);
+    let end = (area.right() + 30.0, area.y + area.h / 2.0);
+    touch(&mut app, 1, TouchPhase::Moved, end.0, end.1);
+    touch(&mut app, 1, TouchPhase::Ended, end.0, end.1);
+    assert_eq!(
+        app.context_menu.as_ref().unwrap().target,
+        MenuTarget::Field(Focus::Search)
+    );
+    // 通过触摸点按菜单项完成复制，覆盖抬手后下一次接触的完整路径。
+    paint(&mut app);
+    let menu = app.context_menu.as_ref().unwrap();
+    let level = &app.popup().unwrap().levels[0];
+    let copy = level
+        .rows
+        .iter()
+        .position(|row| {
+            matches!(row,
+                PopupRow::Item { tag, .. }
+                if MenuEntry::command_at(&menu.entries, *tag) == Some(MenuCommand::Copy)
+            )
+        })
+        .unwrap();
+    let rect = level.row_rects[copy];
+    tap(&mut app, rect.x + 10.0, rect.y + rect.h / 2.0);
+    assert!(app.popup().is_none());
+    assert_eq!(app.clipboard_text().as_deref(), Some("hello world"));
+    assert_eq!(app.focus, Focus::Search);
+    assert_eq!(app.touch.keyboard_requests, 0);
+}
+
+#[test]
+fn touch_field_menu_edits_the_field_without_changing_the_document() {
+    let mut app = document();
+    app.open_search(true);
+    app.find.input.insert("hello world");
+    paint(&mut app);
+    let before = app.editor.active().unwrap().selection;
+    let area = app.find.input.view.area;
+    hold(&mut app, area.x + 4.0, area.y + area.h / 2.0);
+    touch(
+        &mut app,
+        1,
+        TouchPhase::Ended,
+        area.x + 4.0,
+        area.y + area.h / 2.0,
+    );
+    app.run_menu_command(MenuCommand::SelectAll);
+    assert_eq!(app.find.input.selected_text(), "hello world");
+    assert_eq!(app.editor.active().unwrap().selection, before);
+    app.open_context_menu(MenuTarget::Field(Focus::Search), (area.x, area.y));
+    app.run_menu_command(MenuCommand::Cut);
+    assert_eq!(app.clipboard_text().as_deref(), Some("hello world"));
+    assert_eq!(app.find.input.text(), "");
+    assert_eq!(app.search.query, "");
+    app.open_context_menu(MenuTarget::Field(Focus::Search), (area.x, area.y));
+    app.run_menu_command(MenuCommand::Paste);
+    assert_eq!(app.find.input.text(), "hello world");
+    assert_eq!(app.search.query, "hello world");
+    assert_eq!(
+        app.editor
+            .active()
+            .unwrap()
+            .text()
+            .rope()
+            .unwrap()
+            .to_string(),
+        "hello world\n".repeat(400)
+    );
+    assert_eq!(app.focus, Focus::Search);
+}
+
+#[test]
+fn touch_long_press_copies_terminal_text_even_with_mouse_reporting() {
+    for reporting in [false, true] {
+        let mut app = document();
+        app.config.terminal_enabled = Some(true);
+        app.terminal.open = true;
+        app.terminal.height = crate::app::terminal::DEFAULT_HEIGHT;
+        app.relayout();
+        let size = app.terminal_size();
+        let mut term = winc_pty::Terminal::new(size.cols.into(), size.rows.into(), 1000);
+        term.feed(b"PS C:\\> hello world");
+        if reporting {
+            term.feed(b"\x1b[?1000h");
+        }
+        let mut tab = crate::app::terminal::TermTab::new(1, size);
+        tab.apply(term.take_frame().unwrap());
+        app.terminal.tabs.push(tab);
+        paint(&mut app);
+        let grid = app.terminal_grid();
+        let x = grid.x + 8.0 * app.terminal_cell;
+        let end_x = grid.x + 19.0 * app.terminal_cell;
+        let y = grid.y + app.fonts.terminal_line_height / 2.0;
+        hold(&mut app, x, y);
+        assert_eq!(app.drag, Drag::TerminalSelect);
+        assert!(app.popup().is_none());
+        touch(&mut app, 1, TouchPhase::Moved, end_x, y);
+        touch(&mut app, 1, TouchPhase::Ended, end_x, y);
+        assert_eq!(app.drag, Drag::None);
+        assert!(menu_commands(&app).contains(&(MenuCommand::Copy, true)));
+        app.run_menu_command(MenuCommand::Copy);
+        assert_eq!(app.clipboard_text().as_deref(), Some("hello world"));
+        assert_eq!(app.touch.keyboard_requests, 0);
+    }
+}
+
+#[test]
+fn touch_long_press_copies_readonly_diff_text() {
+    use winc_editor::diff_view::{DiffSide, DiffView, LEFT};
+
+    let mut app = document();
+    let language = winc_syntax::detect("touch.rs");
+    app.editor.show_diff(
+        "touch.rs",
+        DiffView::new(
+            DiffSide::new("before", "let a = 1;\n", None, language),
+            DiffSide::new("after", "let a = 2;\n", None, language),
+        ),
+    );
+    paint(&mut app);
+    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
+    let parts = crate::app::diff_parts(app.layout.editor, view, app.cell);
+    let x = parts.panes[LEFT].text.x + TEXT_PAD;
+    let end_x = x + 9.0 * app.cell;
+    let y = parts.body.y + app.fonts.line_height / 2.0;
+    hold(&mut app, x, y);
+    assert!(app.popup().is_none());
+    touch(&mut app, 1, TouchPhase::Moved, end_x, y);
+    touch(&mut app, 1, TouchPhase::Ended, end_x, y);
+    assert!(matches!(
+        app.context_menu.as_ref().unwrap().target,
+        MenuTarget::Diff(_, false)
+    ));
+    app.run_menu_command(MenuCommand::Copy);
+    assert_eq!(app.clipboard_text().as_deref(), Some("let a = 1"));
+    assert_eq!(app.touch.keyboard_requests, 0);
+}
+
+#[test]
+fn touch_long_press_selects_markdown_links_without_navigation() {
+    let dir = sample_folder("touch-markdown-selection");
+    let path = dir.join("README.md");
+    std::fs::write(&path, "[hello world](other.md)\n").unwrap();
+    std::fs::write(dir.join("other.md"), "other\n").unwrap();
+    let mut app = app_with(&path, false);
+    app.set_preview_mode(winc_editor::PreviewMode::Split);
+    for _ in 0..4 {
+        app.wait_for_markdown();
+        paint(&mut app);
+    }
+    let link = app.hits.markdown_links[0].0;
+    let y = link.y + link.h / 2.0;
+    hold(&mut app, link.x + 0.1, y);
+    assert!(app.popup().is_none());
+    touch(&mut app, 1, TouchPhase::Moved, link.right(), y);
+    touch(&mut app, 1, TouchPhase::Ended, link.right(), y);
+    assert_eq!(
+        app.context_menu.as_ref().unwrap().target,
+        MenuTarget::Markdown
+    );
+    app.run_menu_command(MenuCommand::Copy);
+    assert_eq!(app.clipboard_text().as_deref(), Some("hello world"));
+    assert_eq!(app.editor.active().unwrap().path.as_ref(), Some(&path));
+    assert_eq!(app.touch.keyboard_requests, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn touch_long_press_on_a_tab_keeps_the_existing_menu_behavior() {
+    let mut app = document();
+    let tab = app.hits.tabs[0].tab;
+    hold(&mut app, tab.x + 30.0, tab.y + tab.h / 2.0);
+    assert!(matches!(
+        app.context_menu.as_ref().unwrap().target,
+        MenuTarget::Tab(_)
+    ));
+    touch(
+        &mut app,
+        1,
+        TouchPhase::Ended,
+        tab.x + 30.0,
+        tab.y + tab.h / 2.0,
+    );
+    assert!(app.popup().is_some());
+    assert_eq!(app.drag, Drag::None);
 }
 
 #[test]

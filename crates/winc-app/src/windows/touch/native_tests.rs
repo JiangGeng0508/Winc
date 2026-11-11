@@ -387,6 +387,21 @@ pub(crate) fn inject_contact(
     end: POINT,
     settle_ms: u64,
 ) -> io::Result<()> {
+    inject_gesture(hwnd, start, end, 0, settle_ms)
+}
+
+/// 长按后拖选；与普通点按使用同一套原生注入和目标窗口检查。
+pub(crate) fn inject_hold_drag(hwnd: isize, start: POINT, end: POINT) -> io::Result<()> {
+    inject_gesture(hwnd, start, end, 650, 300)
+}
+
+fn inject_gesture(
+    hwnd: isize,
+    start: POINT,
+    end: POINT,
+    hold_ms: u64,
+    settle_ms: u64,
+) -> io::Result<()> {
     // 确认落指位置命中测试窗口，避免触摸注入到其他窗口。
     // SAFETY: `WindowFromPoint` 按值接收坐标，没有指针参数。
     if unsafe { WindowFromPoint(start) } as isize != hwnd {
@@ -423,18 +438,25 @@ pub(crate) fn inject_contact(
     };
     let active = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
     send(&mut contact, active | POINTER_FLAG_DOWN)?;
+    // 原生注入期间持续更新静止接触点，避免系统把没有后续帧的指针提前结束。
+    let held = (0..hold_ms.div_ceil(20)).try_for_each(|_| {
+        std::thread::sleep(Duration::from_millis(20));
+        send(&mut contact, active | POINTER_FLAG_UPDATE)
+    });
     let steps = if start.x == end.x && start.y == end.y {
         1
     } else {
         20
     };
-    let moved = (1..=steps).try_for_each(|step| {
-        std::thread::sleep(Duration::from_millis(20));
-        contact.pointerInfo.ptPixelLocation = POINT {
-            x: start.x + (end.x - start.x) * step / steps,
-            y: start.y + (end.y - start.y) * step / steps,
-        };
-        send(&mut contact, active | POINTER_FLAG_UPDATE)
+    let moved = held.and_then(|()| {
+        (1..=steps).try_for_each(|step| {
+            std::thread::sleep(Duration::from_millis(20));
+            contact.pointerInfo.ptPixelLocation = POINT {
+                x: start.x + (end.x - start.x) * step / steps,
+                y: start.y + (end.y - start.y) * step / steps,
+            };
+            send(&mut contact, active | POINTER_FLAG_UPDATE)
+        })
     });
     std::thread::sleep(Duration::from_millis(if steps == 1 { 40 } else { 250 }));
     // 移动失败时仍然抬手，避免系统中留下处于接触状态的指针。

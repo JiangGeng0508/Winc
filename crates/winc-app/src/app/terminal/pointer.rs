@@ -226,7 +226,13 @@ impl App {
             self.drag = Drag::TerminalSelect;
             return;
         }
-        let unit = match self.click_count(x, y) {
+        let count = self.click_count(x, y);
+        self.terminal_select_at(x, y, count);
+    }
+
+    /// 从网格坐标开始本地文字选择，触摸长按也使用此路径，不向终端程序上报鼠标。
+    pub(in crate::app) fn terminal_select_at(&mut self, x: f32, y: f32, count: u8) {
+        let unit = match count {
             1 => Unit::Char,
             2 => Unit::Word,
             _ => Unit::Line,

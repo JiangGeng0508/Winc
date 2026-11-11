@@ -68,6 +68,20 @@ impl App {
                 }
             }
             MenuTarget::Editor(id) => self.run_editor_command(command, id),
+            MenuTarget::Field(focus) => {
+                if self.focus == focus && self.focused_field().is_some() {
+                    match command {
+                        MenuCommand::Copy => self.copy_field(false),
+                        MenuCommand::Cut => self.copy_field(true),
+                        MenuCommand::Paste => self.paste(),
+                        MenuCommand::SelectAll => self.edit_field(|field| {
+                            field.select_all();
+                            false
+                        }),
+                        _ => {}
+                    }
+                }
+            }
             MenuTarget::Markdown => match command {
                 MenuCommand::Cut => self.copy(true),
                 MenuCommand::Copy => self.copy(false),

@@ -1,7 +1,9 @@
 //! 普通 Winc 窗口的真实触摸回归；置顶窗口会掩盖系统自动收起，不能用于此测试。
+//! 每项测试按完整名称单独运行：winit 在同一进程内只允许创建一个事件循环。
 #![allow(unsafe_code)]
 
 use super::*;
+mod selection;
 use ::windows::UI::ViewManagement::InputPane;
 use ::windows::Win32::Foundation::HWND;
 use ::windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};

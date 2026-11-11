@@ -9,6 +9,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, MouseButton, MouseScrollDelta, Touch, TouchPhase};
 use winit::window::ResizeDirection;
 
+use super::context_menu::MenuTarget;
 use super::*;
 
 #[cfg(test)]
@@ -29,7 +30,7 @@ pub(in crate::app) enum WindowTouch {
 ///
 /// 接触点偏离落指位置超过该距离后开始滚动；距离以内的移动视为点按和长按时的手指抖动。
 const SLOP: f32 = 8.0;
-/// 长按的判定时长：落指后在 [`SLOP`] 范围内保持达到该时长即打开右键菜单。
+/// 长按的判定时长：文字上进入拖选，其他区域打开右键菜单。
 const LONG_PRESS: Duration = Duration::from_millis(500);
 /// 两次点按判定为双击时允许的落指位置偏差（逻辑像素）。
 ///
@@ -50,6 +51,8 @@ enum Mode {
     Scroll,
     /// 落指于滚动条或分隔条：移动和抬手直接转换为左键拖动。
     Drag,
+    /// 长按文字后拖选；抬手结束选择并打开该文字区域的菜单。
+    Select,
     /// 已打开长按菜单或已交由系统执行窗口操作：后续事件不再产生操作。
     Held,
 }
@@ -71,6 +74,8 @@ pub(in crate::app) struct TouchState {
     /// 未结束的接触点，由设备与编号共同标识。
     contacts: Vec<(DeviceId, u64)>,
     gesture: Option<Gesture>,
+    /// 长按开始时的文字目标；抬手越过区域边界时菜单仍作用于原选区。
+    selection: Option<MenuTarget>,
     /// 最近一次收到触摸事件的时刻。
     pub(in crate::app) last_event: Option<Instant>,
     /// 是否正在把一次点按作为鼠标点击发出；为真时连击判定按 [`TAP_SLOP`] 放宽位置偏差。
@@ -86,11 +91,19 @@ pub(in crate::app) struct TouchState {
 #[derive(Debug, PartialEq)]
 enum Action {
     Tap(Point),
-    Context(Point),
-    Scroll { origin: Point, delta: Point },
+    Hold {
+        origin: Point,
+        at: Point,
+        ended: bool,
+    },
+    Scroll {
+        origin: Point,
+        delta: Point,
+    },
     Press(Point),
     Move(Point),
     Release(Point),
+    SelectionRelease(Point),
     CancelDrag,
 }
 
@@ -138,6 +151,19 @@ impl TouchState {
 
         let gesture = self.gesture.as_mut()?;
         let ended = touch.phase == TouchPhase::Ended;
+        // 定时唤醒可能晚于这次移动/抬手；先按已经保持的时长识别长按，避免误转成滚动。
+        if gesture.mode == Mode::Pending && now.duration_since(gesture.since) >= LONG_PRESS {
+            gesture.mode = Mode::Held;
+            let action = Action::Hold {
+                origin: gesture.origin,
+                at: point,
+                ended,
+            };
+            if ended {
+                self.gesture = None;
+            }
+            return Some(action);
+        }
         let mut delta = (point.0 - gesture.last.0, point.1 - gesture.last.1);
         if gesture.mode == Mode::Pending {
             let from_start = (point.0 - gesture.origin.0, point.1 - gesture.origin.1);
@@ -149,17 +175,18 @@ impl TouchState {
         }
         gesture.last = point;
         let action = match gesture.mode {
-            Mode::Pending if ended => Some(if now.duration_since(gesture.since) >= LONG_PRESS {
-                Action::Context(gesture.origin)
-            } else {
-                Action::Tap(gesture.origin)
-            }),
+            Mode::Pending if ended => Some(Action::Tap(gesture.origin)),
             Mode::Scroll if delta != (0.0, 0.0) => Some(Action::Scroll {
                 origin: gesture.origin,
                 delta,
             }),
             Mode::Drag => Some(if ended {
                 Action::Release(point)
+            } else {
+                Action::Move(point)
+            }),
+            Mode::Select => Some(if ended {
+                Action::SelectionRelease(point)
             } else {
                 Action::Move(point)
             }),
@@ -174,7 +201,7 @@ impl TouchState {
     fn cancel_gesture(&mut self) -> Option<Action> {
         self.gesture
             .take()
-            .and_then(|g| (g.mode == Mode::Drag).then_some(Action::CancelDrag))
+            .and_then(|g| matches!(g.mode, Mode::Drag | Mode::Select).then_some(Action::CancelDrag))
     }
 
     fn deadline(&self) -> Option<Instant> {
@@ -190,7 +217,11 @@ impl TouchState {
         }
         let gesture = self.gesture.as_mut()?;
         gesture.mode = Mode::Held;
-        Some(Action::Context(gesture.origin))
+        Some(Action::Hold {
+            origin: gesture.origin,
+            at: gesture.last,
+            ended: false,
+        })
     }
 }
 
@@ -273,7 +304,7 @@ impl App {
         };
     }
 
-    /// 到达长按时限时打开右键菜单，并返回下一次需要唤醒事件循环的时刻。
+    /// 到达长按时限时开始文字拖选或打开非文字区域菜单，返回下一次唤醒时刻。
     ///
     /// 静止的长按不产生移动事件，因此由事件循环的定时唤醒触发。
     pub(in crate::app) fn touch_tick(&mut self, now: Instant) -> Option<Instant> {
@@ -324,11 +355,43 @@ impl App {
                     }
                 }
             }
-            Action::Context((x, y)) => {
+            Action::Hold {
+                origin: (x, y),
+                at,
+                ended,
+            } => {
                 self.last_click = None;
                 self.on_mouse_move(x, y);
-                self.on_mouse_down(MouseButton::Right);
-                self.on_mouse_up(MouseButton::Right);
+                if let Some(target) = self.touch_selection_at(x, y) {
+                    // 长按只选择文字；不继承物理键盘上的 Ctrl/Alt/Shift 导航、列选择等操作。
+                    let modifiers = std::mem::take(&mut self.modifiers);
+                    match target {
+                        MenuTarget::Terminal(_) => {
+                            self.focus = Focus::Terminal;
+                            self.terminal_select_at(x, y, 1);
+                        }
+                        MenuTarget::Markdown => {
+                            self.markdown.menu_source = None;
+                            self.click_markdown(x, y);
+                        }
+                        _ => self.on_mouse_down(MouseButton::Left),
+                    }
+                    self.modifiers = modifiers;
+                    self.reset_blink();
+                    self.request_redraw();
+                    self.touch.selection = Some(target);
+                    if let Some(gesture) = &mut self.touch.gesture {
+                        gesture.mode = Mode::Select;
+                    }
+                    if ended {
+                        self.finish_touch_selection(at);
+                    } else {
+                        self.on_mouse_move(at.0, at.1);
+                    }
+                } else {
+                    self.on_mouse_down(MouseButton::Right);
+                    self.on_mouse_up(MouseButton::Right);
+                }
             }
             Action::Scroll { origin, delta } => {
                 self.last_click = None;
@@ -352,9 +415,22 @@ impl App {
                 self.on_mouse_move(x, y);
                 self.on_mouse_up(MouseButton::Left);
             }
-            // 只有滚动条和分隔条在落指时立即按下；此处的左键抬起保存尺寸并结束拖动，
-            // 不触发按钮，也不放置文件。
-            Action::CancelDrag => self.on_mouse_up(MouseButton::Left),
+            Action::SelectionRelease(point) => self.finish_touch_selection(point),
+            // 中断时保留已经选择的文字，只结束拖动，不弹出菜单。
+            Action::CancelDrag => {
+                self.touch.selection = None;
+                self.on_mouse_up(MouseButton::Left);
+            }
+        }
+    }
+
+    fn finish_touch_selection(&mut self, (x, y): Point) {
+        self.on_mouse_move(x, y);
+        self.on_mouse_up(MouseButton::Left);
+        self.last_click = None;
+        if let Some(target) = self.touch.selection.take() {
+            // 不重新执行右键命中测试，防止终点在其他面板或选区外时改变刚选好的文字。
+            self.open_context_menu(target, (x, y));
         }
     }
 }

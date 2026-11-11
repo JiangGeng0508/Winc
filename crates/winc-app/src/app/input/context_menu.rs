@@ -607,6 +607,8 @@ pub enum MenuTarget {
     Tab(DocumentId),
     /// 编辑区中当前标签的文字。
     Editor(DocumentId),
+    /// 单行输入框中的文字。
+    Field(crate::app::Focus),
     /// Markdown 预览（分栏右边，或只看预览时整个编辑区）。
     Markdown,
     /// 差异标签里的文字：`true` 是右侧（工作区，可以编辑），`false` 是左侧。
